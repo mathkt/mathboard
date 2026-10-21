@@ -1,0 +1,10 @@
+# exe를 만들 때 생기는 파일 (저장소에는 코드만)
+*.exe
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+
+# 작업 그림 파일
+*.dhg
