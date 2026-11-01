@@ -64,7 +64,7 @@ GSP·지오지브라처럼 점을 움직이면 도형이 함께 바뀌고, 교�
 | `panel.py` | 오른쪽 속성 창 |
 | `model.py` | 데이터, 저장 형식(.dhg), 길이·각·넓이 계산 |
 | `solid.py` | 입체도형 (모양, 숨은 선, 자르기, 쌓기, 전개도, 겉넓이·부피) |
-| `.github/workflows/build-exe.yml` | 태그(v1.7 등)를 올리면 GitHub가 exe를 만들어 Releases에 올림 |
+| `.github/workflows/build-exe.yml` | Releases에서 새 버전을 발행하면 GitHub가 exe를 만들어 붙임 |
 | `fonts/` | CMU Serif, KaTeX 수식체 글꼴 (exe 안에 함께 들어감) |
 
 ## 라이선스 안내

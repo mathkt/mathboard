@@ -1,9 +1,9 @@
-# 새 버전 태그(v1.7 등)를 올리면 Windows에서 exe를 만들어 Releases 에 올립니다.
+# Releases 에서 새 버전(v1.7 등)을 발행하면 Windows에서 exe를 만들어 그 버전에 붙입니다.
 name: exe 만들기
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -29,19 +29,14 @@ jobs:
       - name: 확인
         run: dir dist
 
-      - name: Releases 에 올리기 (태그일 때)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: 발행한 버전에 exe 붙이기
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/mdraw.exe
-          name: 도형그리기 ${{ github.ref_name }}
-          body: |
-            **mdraw.exe** 하나만 받아서 실행하면 됩니다. (설치·파이썬 필요 없음)
-            처음 실행할 때 Windows가 '알 수 없는 앱' 경고를 띄우면 **추가 정보 → 실행**을 누르세요.
-            바뀐 점은 저장소의 사용법.txt 를 보세요.
 
       - name: 만든 exe 보관 (직접 실행했을 때)
-        if: "!startsWith(github.ref, 'refs/tags/')"
+        if: github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: mdraw
