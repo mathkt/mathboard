@@ -85,6 +85,9 @@ class Canvas(QWidget):
         self.compass_measure = None   # 두 점으로 너비 재기: [점, ...]
         self.compass_draw = None      # 끌고 있는 동안: {"start": 각, "sweep": 누적각, "last": 각}
         self.on_compass_width = None
+        self.solid_pending = None     # 입체도형 도구: (종류, 크기, tz, tx) — 마우스를 따라 겨냥도 미리보기
+        self.edge_pick = None         # 선 고르기: {"sid": 입체, "keys": [선 이름]}
+        self.group_edit = None        # 더블클릭으로 들어간 그룹 (그 안에서는 하나씩 선택)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(400, 300)
@@ -106,8 +109,90 @@ class Canvas(QWidget):
 
     def set_selection(self, ids):
         self.selection = [i for i in ids if i in self.doc.objects]
+        if self.edge_pick and self.selection != [self.edge_pick["sid"]]:
+            self.edge_pick = None
         self.selectionChanged.emit()
         self.update()
+
+    def group_members(self, oid):
+        """그룹에 든 개체를 누르면 그룹 전체 (더블클릭으로 들어간 그룹은 하나씩)"""
+        o = self.doc.objects.get(oid)
+        g = o.get("group") if o else None
+        if g is None or g == self.group_edit:
+            return [oid]
+        return [i for i, q in self.doc.objects.items() if q.get("group") == g and not q.get("hidden")]
+
+    def expand_groups(self, ids):
+        out = []
+        for i in ids:
+            for j in self.group_members(i):
+                if j not in out:
+                    out.append(j)
+        return out
+
+    # ------------------------------------------------------------ 선 고르기 (입체도형 모서리마다 실선·점선)
+    def start_edge_pick(self, sid):
+        if self.edge_pick and self.edge_pick["sid"] == sid:
+            self.edge_pick = None
+            self.status.emit("선 고르기를 끝냈습니다.")
+        else:
+            self.win.choose_tool("select")
+            self.selection = [sid]
+            self.edge_pick = {"sid": sid, "keys": []}
+            self.status.emit("선 고르기: 바꿀 선을 클릭하세요. Shift+클릭으로 여러 개, 빈 곳 클릭이나 Esc로 끝")
+        self.selectionChanged.emit()
+        self.update()
+
+    def edge_at(self, sid, wp):
+        o = self.doc.objects.get(sid)
+        if not o:
+            return None
+        best, bk = self.tol() * 1.6, None
+        for k, A, B, _v in Geo(self.doc).solid(o).get("edge_hits", []):
+            d = dist_to_seg(wp, A, B)
+            if d < best:
+                best, bk = d, k
+        return bk
+
+    def draw_edge_pick(self, p, geo):
+        o = self.doc.objects.get(self.edge_pick["sid"]) if self.edge_pick else None
+        if not o:
+            self.edge_pick = None
+            return
+        hits = geo.solid(o).get("edge_hits", [])
+        keys = set(self.edge_pick["keys"])
+        hov = self.edge_at(o["id"], self.mouse)
+        for k, A, B, _v in hits:
+            if k in keys:
+                p.setPen(QPen(QColor(40, 140, 255, 150), 7 / self.scale, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(A, B)
+            elif k == hov:
+                p.setPen(QPen(QColor(240, 140, 30, 140), 6 / self.scale, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(A, B)
+            else:
+                p.setPen(QPen(QColor(40, 140, 255, 45), 3 / self.scale, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(A, B)
+
+    def press_edge_pick(self, wp, mods):
+        ep = self.edge_pick
+        k = self.edge_at(ep["sid"], wp)
+        if k is None:
+            h = self.hit(wp)
+            if h and h[0] == ep["sid"]:
+                return True
+            self.edge_pick = None
+            self.status.emit("선 고르기를 끝냈습니다.")
+            self.selectionChanged.emit()
+            return False
+        if mods & (Qt.ShiftModifier | Qt.ControlModifier):
+            if k in ep["keys"]:
+                ep["keys"].remove(k)
+            else:
+                ep["keys"].append(k)
+        else:
+            ep["keys"] = [k]
+        self.selectionChanged.emit()
+        return True
 
     def set_tool(self, tool):
         self.cancel_temp()
@@ -254,8 +339,11 @@ class Canvas(QWidget):
         p.translate(self.offset)
         p.scale(self.scale, self.scale)
         geo = Geo(self.doc)
-        Renderer(self.doc, geo, self.selection).draw(p)
+        sel = [i for i in self.selection if not (self.edge_pick and i == self.edge_pick["sid"])]
+        Renderer(self.doc, geo, sel).draw(p)
         self.draw_preview(p, geo)
+        if self.edge_pick:
+            self.draw_edge_pick(p, geo)
         if self.cut_pick:
             p.setPen(QPen(QColor(230, 90, 20), 2 / self.scale))
             p.setBrush(QColor(230, 90, 20, 60))
@@ -305,6 +393,17 @@ class Canvas(QWidget):
 
     def draw_preview(self, p, geo):
         if self.tool == "select":
+            return
+        if self.tool == "solid" and self.solid_pending and self.underMouse():
+            kind, params, tz, tx = self.solid_pending
+            c = self.snap(self.mouse, self.alt_now())
+            ghost = M.solid_dict(self.doc, kind, c.x(), c.y(), params, tz, tx)
+            ghost["id"] = -1
+            g2 = Geo(self.doc)
+            p.save()
+            p.setOpacity(0.45)
+            Renderer(self.doc, g2, []).draw_solid(p, ghost)
+            p.restore()
             return
         if self.tool == "compass":
             self.draw_compass(p, geo)
@@ -406,6 +505,9 @@ class Canvas(QWidget):
         if self.cut_pick:
             self.press_cut_pick(wp)
             return
+        if self.edge_pick and self.press_edge_pick(wp, mods):
+            self.update()
+            return
         if mods & Qt.AltModifier:
             h = self.hit(wp, kinds=("solid",))
             if h:
@@ -438,18 +540,25 @@ class Canvas(QWidget):
             self.rotating = None
         if h:
             oid, part = h
+            g = self.doc.objects[oid].get("group")
+            if self.group_edit is not None and g != self.group_edit:
+                self.group_edit = None
+            mem = self.group_members(oid)
             if multi:
                 if oid in self.selection:
-                    self.selection.remove(oid)
+                    for i in mem:
+                        if i in self.selection:
+                            self.selection.remove(i)
                     self.selectionChanged.emit()
                     return
-                self.selection.append(oid)
+                self.selection += [i for i in mem if i not in self.selection]
                 self.selectionChanged.emit()
             elif oid not in self.selection:
-                self.selection = [oid]
+                self.selection = mem
                 self.selectionChanged.emit()
             self.start_drag(oid, part, wp)
         else:
+            self.group_edit = None
             if not multi and self.selection:
                 self.selection = []
                 self.selectionChanged.emit()
@@ -643,7 +752,7 @@ class Canvas(QWidget):
         if d["mode"] == "rubber":
             r = QRectF(d["start"], d["cur"]).normalized()
             if r.width() * self.scale > 3 or r.height() * self.scale > 3:
-                ids = self.objects_in_rect(r)
+                ids = self.expand_groups(self.objects_in_rect(r))
                 if d["add"]:
                     ids = list(dict.fromkeys(self.selection + ids))
                 self.set_selection(ids)
@@ -696,6 +805,12 @@ class Canvas(QWidget):
         oid, part = h
         o = self.doc.objects[oid]
         self.drag = None
+        g = o.get("group")
+        if g is not None and g != self.group_edit and len(self.selection) > 1:
+            self.group_edit = g
+            self.set_selection([oid])
+            self.status.emit("그룹 안에서 하나씩 고릅니다. 그룹 밖을 클릭하면 다시 묶여서 선택됩니다.")
+            return
         t = o["type"]
         if t == "solid":
             if part.startswith("slabel"):
@@ -1555,6 +1670,12 @@ class Canvas(QWidget):
             self.setCursor(Qt.OpenHandCursor)
             return
         if k == Qt.Key_Escape:
+            if self.edge_pick:
+                self.edge_pick = None
+                self.status.emit("선 고르기를 끝냈습니다.")
+                self.selectionChanged.emit()
+                self.update()
+                return
             if self.tool == "compass" and (self.compass_pivot or self.compass_measure is not None):
                 self.compass_pivot = None
                 self.compass_measure = None
@@ -1590,6 +1711,11 @@ class Canvas(QWidget):
             self.nudge(dx, dy)
             return
         super().keyPressEvent(e)
+
+    def leaveEvent(self, e):
+        if self.tool == "solid":
+            self.update()
+        super().leaveEvent(e)
 
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():

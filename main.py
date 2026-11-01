@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                                QKeySequenceEdit, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
                                QSpinBox, QStyle, QListWidget, QTabBar, QMenu, QSizePolicy, QStyleOptionToolButton, QStylePainter, QTabWidget,
                                QTableWidget, QTableWidgetItem, QTextBrowser, QToolBar, QToolButton,
-                               QVBoxLayout, QWidget)
+                               QVBoxLayout, QWidget, QScrollArea)
 
 import model as M
 import solid as S
@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 
 TOOLS = [
     ("select", "선택", "V"),
@@ -278,6 +278,7 @@ class ToolButton(QToolButton):
         self.setIconSize(QSize(24, 24))
         self.setFixedSize(60, 52)
         self.setAutoRaise(True)
+        self.setToolTip(action.toolTip())
 
     def paintEvent(self, e):
         p = QStylePainter(self)
@@ -294,23 +295,90 @@ class ToolButton(QToolButton):
         pm = a.icon().pixmap(24, 24)
         p.drawPixmap((self.width() - 24) // 2, 3, pm)
         f = QFont(self.font())
-        f.setPointSizeF(9)
-        p.setFont(f)
         p.setPen(QColor("#1f2d3d"))
-        f.setPointSizeF(8.5)
+        f.setPointSizeF(8.5 if self.width() >= 54 else 7.5)
         p.setFont(f)
-        p.drawText(QRectF(0, 26, self.width(), 14), Qt.AlignCenter, a.text())
+        text = p.fontMetrics().elidedText(a.text(), Qt.ElideRight, self.width() - 2)
+        p.drawText(QRectF(0, 26, self.width(), 14), Qt.AlignCenter, text)
         k = shortcut_text(a)
-        if k:
+        if k and self.height() >= 50:
             f.setPointSizeF(7)
             p.setFont(f)
             p.setPen(QColor("#8a94a3"))
             p.drawText(QRectF(0, 39, self.width(), 11), Qt.AlignCenter, k)
 
 
+# ---------------------------------------------------------------- 왼쪽 도구 상자 (폭에 따라 줄 수가 바뀜)
+class ToolPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.grid = QGridLayout(self)
+        self.grid.setSizeConstraint(QGridLayout.SetNoConstraint)
+        self.grid.setContentsMargins(3, 3, 3, 3)
+        self.grid.setSpacing(3)
+        self.items = []        # ("btn", 단추) / ("sep", 선) / ("wide", 칸, 좁을 때 함수)
+        self.layout_key = None
+
+    def add_button(self, b):
+        self.items.append(("btn", b))
+
+    def add_sep(self):
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color:#ccc")
+        self.items.append(("sep", line))
+
+    def add_wide(self, w, on_narrow=None):
+        w.setMinimumWidth(10)
+        self.items.append(("wide", w, on_narrow))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.relayout()
+
+    def sizeHint(self):
+        return QSize(200, 600)
+
+    def relayout(self):
+        avail = max(30, self.width() - 6)
+        cols = max(1, min(6, (avail + 3) // 63))
+        bw = max(30, min(72, (avail - 3 * (cols - 1)) // cols))
+        bh = 52 if bw >= 54 else 42
+        key = (cols, bw)
+        if key == self.layout_key:
+            return
+        self.layout_key = key
+        while self.grid.count():
+            self.grid.takeAt(0)
+        row, col = 0, 0
+        for it in self.items:
+            if it[0] == "btn":
+                it[1].setFixedSize(bw, bh)
+                self.grid.addWidget(it[1], row, col)
+                col += 1
+                if col == cols:
+                    row, col = row + 1, 0
+                continue
+            if col:
+                row, col = row + 1, 0
+            if it[0] == "wide" and it[2]:
+                it[2](cols < 3)
+            self.grid.addWidget(it[1], row, 0, 1, cols)
+            row += 1
+        for r in range(self.grid.rowCount() + 1):
+            self.grid.setRowStretch(r, 0)
+        self.grid.setRowStretch(row + 1, 1)
+        self.grid.activate()
+        self.setMinimumHeight(self.grid.minimumSize().height())
+
+    def minimumSizeHint(self):
+        return QSize(36, self.minimumHeight())
+
+
 # ---------------------------------------------------------------- 입체도형 만들기 창
 class SolidDialog(QDialog):
     last_kind = "cuboid"
+    last_orient = "down"
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -326,6 +394,17 @@ class SolidDialog(QDialog):
         self.form = QFormLayout(self.form_box)
         right.addWidget(QLabel("크기 (cm)"))
         right.addWidget(self.form_box)
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel("놓는 방향"))
+        self.orient = QComboBox()
+        for k, name, _tz, _tx in S.ORIENTS:
+            self.orient.addItem(name, k)
+        self.orient.setCurrentIndex(max(0, self.orient.findData(SolidDialog.last_orient)))
+        orow.addWidget(self.orient, 1)
+        right.addLayout(orow)
+        tip = QLabel("확인을 누른 뒤 놓을 곳을 클릭하세요.")
+        tip.setStyleSheet("color:#666")
+        right.addWidget(tip)
         right.addStretch()
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -337,7 +416,14 @@ class SolidDialog(QDialog):
         self.list.itemDoubleClicked.connect(lambda _i: self.accept())
         keys = [k for k, _ in S.KINDS]
         self.list.setCurrentRow(keys.index(SolidDialog.last_kind))
-        self.resize(380, 300)
+        self.resize(420, 320)
+
+    def orient_angles(self):
+        SolidDialog.last_orient = self.orient.currentData()
+        for k, _n, tz, tx in S.ORIENTS:
+            if k == SolidDialog.last_orient:
+                return tz, tx
+        return 0.0, 0.0
 
     def kind(self):
         return S.KINDS[self.list.currentRow()][0]
@@ -356,7 +442,7 @@ class SolidDialog(QDialog):
             for k in range(3, 13):
                 self.base.addItem(f"정{k}각형", k)
             self.form.addRow("밑면", self.base)
-            tip = QLabel("층의 종류·크기는 놓은 뒤 속성 창에서 바꿉니다.")
+            tip = QLabel("층마다 원기둥·원뿔·원뿔대·반구를 고르고 크기를 정하는 것은 놓은 뒤 속성 창에서 합니다.")
             tip.setWordWrap(True)
             tip.setStyleSheet("color:#666")
             self.form.addRow(tip)
@@ -375,6 +461,8 @@ class SolidDialog(QDialog):
         SolidDialog.last_kind = self.kind()
         if self.kind() == "stack":
             layers = [dict(l) for l in S.STACK_PRESETS[self.preset.currentText()]]
+            if self.preset.currentText().startswith("직접"):
+                layers = [{"shape": "line", "r1": 2.0, "r2": 2.0, "h": 2.0}]
             n = self.base.currentData()
             if n:
                 for L in layers:
@@ -610,7 +698,8 @@ HELP_HTML = """
 </ul>
 <h3>입체도형</h3>
 <ul>
-<li><b>입체도형(K)</b> 도구로 클릭 → 종류(정육면체·직육면체·각기둥·각뿔·각뿔대·원기둥·원뿔·원뿔대·구)와 크기(cm)를 고릅니다.</li>
+<li><b>입체도형(K)</b>을 누르면 바로 창이 떠서 종류(정육면체·직육면체·각기둥·각뿔·각뿔대·원기둥·원뿔·원뿔대·구·쌓기), 크기(cm), 놓는 방향을 고릅니다. 확인 → 마우스를 따라 겨냥도가 보이고, 클릭한 곳에 놓입니다. (Shift+클릭: 같은 도형을 계속 놓기)</li>
+<li><b>놓는 방향(눕히기)</b>: 속성 창 '놓는 방향'에서 세우기·거꾸로·밑면 →·← 밑면·밑면 앞·밑면 뒤, 슬라이더로 원하는 만큼 기울이기.</li>
 <li>보이지 않는 모서리는 자동으로 점선이 됩니다. 처음엔 교과서식 <b>겨냥도</b>로 그립니다.</li>
 <li><b>더블클릭 → 회전 모드</b>: 끌어서 돌립니다. Esc 또는 빈 곳 클릭으로 끝. 속성 창의 버튼(겨냥도·비스듬히·앞·위·옆·아래)과 슬라이더로도 돌립니다.</li>
 <li>평소에 끌면 위치가 옮겨집니다. 꼭짓점 이름은 더블클릭해서 바꾸고 끌어서 옮깁니다.</li>
@@ -624,7 +713,8 @@ HELP_HTML = """
 <li><b>면 색칠</b>: Alt+클릭 (앞쪽 면), Alt+Shift+클릭 (뒤쪽 면). 색과 진하기는 속성 창에서.</li>
 <li><b>자르기</b>: 속성 창 → '점 3개로 자르기'(꼭짓점·모서리 위 3곳 클릭) 또는 '방향으로 자르기'(기울기·방향·위치 슬라이더). 단면 모양 이름과 넓이가 나오고, 벌리기·한쪽 조각만 보기·단면 색을 바꿀 수 있습니다.</li>
 <li><b>겹치기(안에 넣기)</b>: 안에 넣을 입체를 고르고 속성 창 '바깥 입체'를 고르면 밑면을 맞춰 겹칩니다. 안쪽 선은 실선/점선. 함께 움직이고 함께 돕니다.</li>
-<li><b>쌓기(회전체)</b>: 입체도형 종류에서 '쌓기' → 연필·팽이·캡슐 등. 속성 창에서 층을 더하고 크기를 바꿉니다. 밑면을 정n각형으로 하면 각기둥+각뿔 같은 모양도 됩니다.</li>
+<li><b>쌓기(회전체)</b>: 입체도형 종류에서 '쌓기' → 연필·팽이·캡슐 등. 속성 창에서 층마다 원기둥·원뿔·거꾸로 원뿔·원뿔대·반구를 고르고 반지름·높이를 정합니다. ▲▼로 층 순서를 바꿉니다. 밑면을 정n각형으로 하면 각기둥·각뿔로 쌓습니다.</li>
+<li><b>선마다 실선·점선</b>: 속성 창 '선 고르기' → 선을 클릭(Shift+클릭으로 여러 개) → 자동/실선/점선/숨김, 굵기·색. 원은 앞쪽 반·뒤쪽 반을 따로 고릅니다. '모두 자동으로'로 되돌립니다. 겹친 입체는 '안쪽 선'에서 한 번에 바꿀 수도 있습니다.</li>
 </ul>
 <h3>교과서 스타일</h3>
 <ul><li>설정 → 환경 설정 → <b>교과서 스타일로 맞추기</b>: LaTeX 글씨체(CMU Serif), x·θ 기울임, ° 작은 동그라미, 가는 선, 작은 각 표시.</li></ul>
@@ -634,9 +724,12 @@ HELP_HTML = """
 <li>여러 개 선택: Shift+클릭, 빈 곳 드래그 · 전부 선택: Ctrl+A</li>
 <li>점 이름 바꾸기: 점이나 이름을 더블클릭 · 이름은 끌어서 옮길 수 있습니다.</li>
 <li>오른쪽 클릭: 바로가기 메뉴 · 방향키: 조금씩 이동 (Shift: 크게)</li>
+<li><b>그룹</b>: 여러 개 선택 → Ctrl+G(그룹으로 묶기), Ctrl+Shift+G(그룹 풀기). 묶은 것은 한 번에 선택·이동·복사·삭제. 그룹 안의 하나만 고치려면 더블클릭.</li>
+<li>다각형의 변은 하나씩 클릭하면 그 변만 굵기·점선을 바꿀 수 있습니다.</li>
 </ul>
 <h3>화면</h3>
-<ul><li>마우스 휠: 확대/축소 · 오른쪽 버튼(또는 가운데 버튼, Space+드래그)으로 끌기: 화면 이동</li></ul>
+<ul><li>마우스 휠: 확대/축소 · 오른쪽 버튼(또는 가운데 버튼, Space+드래그)으로 끌기: 화면 이동</li>
+<li>왼쪽 도구 창과 오른쪽 속성 창은 경계선을 끌어서 폭을 줄이거나 늘립니다(도구는 줄 수가 자동으로 바뀜). F3 도구 창, F4 속성 창 숨기기/보이기. 창 크기는 다음에도 그대로 열립니다.</li></ul>
 <h3>한글(HWP)·PPT에 넣기</h3>
 <ul>
 <li><b>Ctrl+Shift+C</b>(그림 복사) 후 한글/PPT에서 Ctrl+V</li>
@@ -645,7 +738,8 @@ HELP_HTML = """
 </ul>
 <h3>단축키 (기본값 · 설정 → 환경 설정 → 단축키 에서 바꿀 수 있음)</h3>
 <p>V 선택 · P 점 · S 선분 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
-Ctrl+Z 되돌리기 · Ctrl+Y 다시하기 · Ctrl+C/V 복사/붙여넣기 · Delete 삭제 · Ctrl+S 저장 · Esc 취소</p>
+Ctrl+Z 되돌리기 · Ctrl+Y 다시하기 · Ctrl+C/V 복사/붙여넣기 · Delete 삭제 · Ctrl+S 저장 · Esc 취소<br>
+Ctrl+G 그룹 · Ctrl+Shift+G 그룹 풀기 · F9 모눈 · Shift+F9 모눈에 맞추기 · F3 도구 창 · F4 속성 창</p>
 """
 
 
@@ -702,9 +796,25 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.panel = PropertyPanel(self)
         dock = QDockWidget("속성", self)
+        dock.setObjectName("panel_dock")
         dock.setWidget(self.panel)
-        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.panel_dock = dock
+        self.tool_panel = ToolPanel()
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setWidget(self.tool_panel)
+        tdock = QDockWidget("도구", self)
+        tdock.setObjectName("tools_dock")
+        tdock.setWidget(sa)
+        tdock.setMinimumWidth(44)
+        tdock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self.addDockWidget(Qt.LeftDockWidgetArea, tdock)
+        self.tools_dock = tdock
+        self.group_edit = None
 
         self.build_actions()
         self.build_menus()
@@ -715,6 +825,13 @@ class MainWindow(QMainWindow):
         self.choose_tool("select")
         self.update_title()
         self.resize(1360, 860)
+        self.resizeDocks([self.tools_dock, self.panel_dock], [204, 290], Qt.Horizontal)
+        try:
+            st_ = qsettings().value("win_state")
+            if st_ is not None:
+                self.restoreState(st_)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 탭
     @property
@@ -878,10 +995,12 @@ class MainWindow(QMainWindow):
         self.a_del = A("delete", E, "삭제", self.delete_selection, "Delete")
         self.a_all = A("all", E, "모두 선택", self.select_all, "Ctrl+A")
         self.a_hide = A("hide", E, "숨기기", self.hide_selection, "Ctrl+H")
+        self.a_group = A("group", E, "그룹으로 묶기", self.group_selection, "Ctrl+G")
+        self.a_ungroup = A("ungroup", E, "그룹 풀기", self.ungroup_selection, "Ctrl+Shift+G")
         self.a_showall = A("showall", E, "숨긴 개체 모두 보이기", self.show_all_hidden, "Ctrl+Shift+H")
         st = self.doc.settings
-        self.a_grid = A("grid", V, "모눈 보이기", self.toggle_grid, "Ctrl+G", True, st["show_grid"])
-        self.a_snap = A("snap", V, "모눈에 맞추기", self.toggle_snap, "Ctrl+Shift+G", True, st["snap"])
+        self.a_grid = A("grid", V, "모눈 보이기", self.toggle_grid, "F9", True, st["show_grid"])
+        self.a_snap = A("snap", V, "모눈에 맞추기", self.toggle_snap, "Shift+F9", True, st["snap"])
         self.a_zin = A("zin", V, "확대", lambda: self.zoom(1.25), "Ctrl+=")
         self.a_zout = A("zout", V, "축소", lambda: self.zoom(0.8), "Ctrl+-")
         self.a_z100 = A("z100", V, "원래 크기 (100%)", self.zoom_reset, "Ctrl+0")
@@ -889,6 +1008,12 @@ class MainWindow(QMainWindow):
         self.a_settings = A("settings", H, "환경 설정...", self.open_settings, "")
         self.a_help = A("help", H, "사용법", self.show_help, "F1")
         self.a_about = A("about", H, "프로그램 정보", self.show_about, "")
+        self.a_panel = self.panel_dock.toggleViewAction()
+        self.a_panel.setText("속성 창 보이기")
+        self.a_tools = self.tools_dock.toggleViewAction()
+        self.a_tools.setText("도구 창 보이기")
+        self.shortcut_defs.append(("panel", V, self.a_panel, "F4"))
+        self.shortcut_defs.append(("tools", V, self.a_tools, "F3"))
         for _sid, _g, a, _d in self.shortcut_defs:
             self.addAction(a)
 
@@ -906,7 +1031,12 @@ class MainWindow(QMainWindow):
             self.addAction(a)
             self.tool_actions[key] = a
             self.shortcut_defs.append(("tool_" + key, "도구", a, sc))
-        self.apply_shortcuts(load_shortcuts())
+        custom = load_shortcuts()
+        if "group" not in custom:      # 1.7: Ctrl+G 는 그룹 (모눈은 F9)
+            for sid_, old in (("grid", "Ctrl+G"), ("snap", "Ctrl+Shift+G")):
+                if custom.get(sid_) == old:
+                    custom.pop(sid_)
+        self.apply_shortcuts(custom)
 
     def apply_shortcuts(self, custom):
         self.custom_shortcuts = dict(custom)
@@ -937,10 +1067,11 @@ class MainWindow(QMainWindow):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("편집(&E)")
         for a in [self.a_undo, self.a_redo, None, self.a_copy, self.a_paste, self.a_dup, self.a_del,
-                  None, self.a_all, self.a_hide, self.a_showall]:
+                  None, self.a_all, self.a_group, self.a_ungroup, None, self.a_hide, self.a_showall]:
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("보기(&V)")
-        for a in [self.a_grid, self.a_snap, None, self.a_zin, self.a_zout, self.a_z100, self.a_zfit]:
+        for a in [self.a_grid, self.a_snap, None, self.a_tools, self.a_panel, None,
+                  self.a_zin, self.a_zout, self.a_z100, self.a_zfit]:
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("작도(&C)")
         m.addAction("삼각형 작도 (SSS·SAS·ASA)…", self.triangle_dialog)
@@ -969,52 +1100,38 @@ class MainWindow(QMainWindow):
         self.top_names = {self.a_new: "새로 만들기", self.a_open: "열기", self.a_save: "저장",
                           self.a_newtab: "새 탭", self.a_undo: "되돌리기", self.a_redo: "다시하기",
                           self.a_copyimg: "그림 복사", self.a_png: "PNG 저장", self.a_zfit: "전체 보기",
-                          self.a_grid: "모눈", self.a_snap: "모눈 맞추기"}
+                          self.a_grid: "모눈", self.a_snap: "모눈 맞추기", self.a_group: "그룹",
+                          self.a_ungroup: "그룹 풀기", self.a_tools: "도구 창", self.a_panel: "속성 창"}
         for a in [self.a_new, self.a_open, self.a_save, self.a_newtab, None, self.a_undo, self.a_redo, None,
-                  self.a_copyimg, self.a_png, None, self.a_zfit, self.a_grid, self.a_snap]:
+                  self.a_copyimg, self.a_png, None, self.a_group, self.a_ungroup, None,
+                  self.a_zfit, self.a_grid, self.a_snap, None, self.a_tools, self.a_panel]:
             top.addSeparator() if a is None else top.addAction(a)
+        top.setObjectName("top_bar")
         top.setStyleSheet("QToolButton{padding:1px 6px;}")
         self.addToolBar(Qt.TopToolBarArea, top)
         self.apply_shortcuts(self.custom_shortcuts)
 
-        left = QToolBar("도구")
-        left.setMovable(False)
-        box = QWidget()
-        grid = QGridLayout(box)
-        grid.setContentsMargins(3, 3, 3, 3)
-        grid.setSpacing(3)
+        tp = self.tool_panel
         self.tool_buttons = []
-        row, col = 0, 0
         for t in TOOLS:
             if t is None:
-                if col:
-                    row, col = row + 1, 0
-                line = QFrame()
-                line.setFrameShape(QFrame.HLine)
-                line.setStyleSheet("color:#ccc")
-                grid.addWidget(line, row, 0, 1, 3)
-                row += 1
+                tp.add_sep()
                 continue
             key = t[0]
             b = ToolButton(self.tool_actions[key])
-            grid.addWidget(b, row, col)
+            tp.add_button(b)
             self.tool_buttons.append(b)
-            col += 1
-            if col == 3:
-                row, col = row + 1, 0
             if key == "compass":
-                if col:
-                    row, col = row + 1, 0
                 cw = QDoubleSpinBox()
                 cw.setRange(0.1, 50)
                 cw.setDecimals(1)
                 cw.setSingleStep(0.5)
                 cw.setValue(self.canvas.compass_r)
-                cw.setPrefix("너비 ")
                 cw.setSuffix(" cm")
                 cw.setToolTip("컴퍼스 너비")
                 cw.valueChanged.connect(lambda v: (setattr(self.canvas, "compass_r", v), self.canvas.update()))
                 self.canvas.on_compass_width = lambda v: (cw.blockSignals(True), cw.setValue(v), cw.blockSignals(False))
+                tp.add_wide(cw, lambda narrow, cw=cw: cw.setPrefix("" if narrow else "컴퍼스 너비 "))
                 mb = QPushButton("두 점으로 재기")
                 mb.setToolTip("컴퍼스 너비를 두 점 사이 길이로 맞춥니다")
 
@@ -1023,25 +1140,28 @@ class MainWindow(QMainWindow):
                     self.canvas.compass_measure = []
                     self.statusBar().showMessage("너비를 잴 두 점을 차례로 클릭하세요.")
                 mb.clicked.connect(measure)
-                grid.addWidget(cw, row, 0, 1, 2)
-                grid.addWidget(mb, row, 2)
-                row += 1
+                tp.add_wide(mb, lambda narrow, mb=mb: mb.setText("재기" if narrow else "두 점으로 재기"))
             if key == "regpoly":
-                if col:
-                    row, col = row + 1, 0
                 spin = QSpinBox()
                 spin.setRange(3, 20)
                 spin.setValue(5)
-                spin.setPrefix("정다각형 변 ")
                 spin.setToolTip("정다각형 변의 수")
                 spin.valueChanged.connect(lambda v: setattr(self.canvas, "reg_n", v))
-                grid.addWidget(spin, row, 0, 1, 3)
-                row += 1
-        grid.setRowStretch(row + 1, 1)
-        left.addWidget(box)
-        self.addToolBar(Qt.LeftToolBarArea, left)
+                tp.add_wide(spin, lambda narrow, spin=spin: spin.setPrefix("변 " if narrow else "정다각형 변 "))
+        tp.layout_key = None
+        tp.relayout()
 
     def choose_tool(self, key):
+        if key == "solid":
+            dlg = SolidDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                self.choose_tool("select")
+                return
+            kind, params = dlg.values()
+            tz, tx = dlg.orient_angles()
+            self.canvas.solid_pending = (kind, params, tz, tx)
+        else:
+            self.canvas.solid_pending = None
         self.tool_actions[key].setChecked(True)
         self.canvas.set_tool(key)
         self.canvas.setFocus()
@@ -1298,12 +1418,17 @@ class MainWindow(QMainWindow):
         self.changed()
 
     def add_solid(self, wp):
-        dlg = SolidDialog(self)
-        if dlg.exec() != QDialog.Accepted:
-            return False
-        kind, params = dlg.values()
+        pend = self.canvas.solid_pending
+        if not pend:
+            dlg = SolidDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                return False
+            kind, params = dlg.values()
+            tz, tx = dlg.orient_angles()
+        else:
+            kind, params, tz, tx = pend
         self.checkpoint()
-        sid = M.make_solid(self.doc, kind, wp.x(), wp.y(), params)
+        sid = M.make_solid(self.doc, kind, wp.x(), wp.y(), copy.deepcopy(params), tz=tz, tx=tx)
         self.canvas.set_selection([sid])
         self.changed()
         self.statusBar().showMessage("입체도형을 놓았습니다. 더블클릭하면 회전 모드, 속성 창에서 크기·보는 방향을 바꿉니다.")
@@ -1427,6 +1552,36 @@ class MainWindow(QMainWindow):
         self.canvas.set_selection([o["id"] for o in hid])
         self.changed()
 
+    def new_group_id(self):
+        return max([o.get("group", 0) or 0 for o in self.doc.objects.values()] + [0]) + 1
+
+    def group_selection(self):
+        ids = self.selected()
+        if len(ids) < 2:
+            self.statusBar().showMessage("묶을 것을 두 개 이상 선택하세요. (Shift+클릭 또는 끌어서 선택)")
+            return
+        self.checkpoint()
+        g = self.new_group_id()
+        for i in ids:
+            self.doc.objects[i]["group"] = g
+        self.canvas.group_edit = None
+        self.canvas.selectionChanged.emit()
+        self.changed()
+        self.statusBar().showMessage(f"{len(ids)}개를 그룹으로 묶었습니다. 하나만 고치려면 더블클릭하세요.")
+
+    def ungroup_selection(self):
+        ids = [i for i in self.selected() if self.doc.objects[i].get("group") is not None]
+        if not ids:
+            self.statusBar().showMessage("선택한 것 중에 그룹이 없습니다.")
+            return
+        self.checkpoint()
+        for i in ids:
+            self.doc.objects[i].pop("group", None)
+        self.canvas.group_edit = None
+        self.canvas.selectionChanged.emit()
+        self.changed()
+        self.statusBar().showMessage("그룹을 풀었습니다.")
+
     def select_all(self):
         self.canvas.set_selection([o["id"] for o in self.doc.objects.values() if not o.get("hidden")])
 
@@ -1459,6 +1614,13 @@ class MainWindow(QMainWindow):
             nid = self.doc.add(n)
             mapping[old] = nid
             new_ids.append(nid)
+        gmap = {}
+        for nid in new_ids:
+            g = self.doc.objects[nid].get("group")
+            if g is not None:
+                if g not in gmap:
+                    gmap[g] = self.new_group_id()
+                self.doc.objects[nid]["group"] = gmap[g]
         self.canvas.set_selection(new_ids)
         self.changed()
 
@@ -1700,6 +1862,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self.maybe_save():
+            try:
+                qsettings().setValue("win_state", self.saveState())
+            except Exception:
+                pass
             e.accept()
         else:
             e.ignore()

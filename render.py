@@ -828,21 +828,98 @@ class Geo:
         sec_col = (cut.get("color", "#f5a623"), cut.get("alpha", 45))
         backs, fronts = [], []
         pdraw = []
+        es = o.get("edge_styles") or {}
+        curved = S.is_curved(o)
+        inner = o.get("inner_line", "solid") if o.get("host") is not None else "solid"
+        info["edge_hits"] = []
+        info["custom"] = []
+        keycache = {}
+
+        def ekey(part_mesh, i, j, v):
+            base_m = getattr(part_mesh, "parent", part_mesh)
+            if id(base_m) not in keycache:
+                keycache[id(base_m)] = S.edge_keys(base_m, curved)
+            kmap, rings = keycache[id(base_m)]
+            e = S.part_edge(part_mesh, i, j)
+            if e is None:
+                return "sec:" + ("v" if v else "h")
+            k = kmap.get(e)
+            if k is None:
+                return "sec:" + ("v" if v else "h")
+            if k in rings:
+                k += ":v" if v else ":h"
+            return k
+        cls_cache = {}
+
+        def cls(key, v):
+            """선의 그리기 방법: 'V'(보이는 선) / 'H'(숨은 선) / None(안 그림) / ('C', 모양) 직접 정한 선"""
+            ck = (key, v)
+            if ck in cls_cache:
+                return cls_cache[ck]
+            st = es.get(key)
+            mode = (st or {}).get("mode", "auto")
+            if mode == "auto":
+                if inner == "dash":
+                    mode = "dash"
+                elif inner == "allsolid":
+                    mode = "solid"
+                elif inner == "hide":
+                    mode = "hide"
+            if mode == "auto" and not (st and (st.get("width") or st.get("color"))):
+                r = "V" if v else "H"
+            elif mode == "hide":
+                r = None
+            else:
+                if mode == "auto":
+                    mode = "solid" if v else "dash"
+                base = o["style"] if mode == "solid" else o.get("hid_style", o["style"])
+                d = dict(base)
+                d["dash"] = "solid" if mode == "solid" else (base.get("dash") if base.get("dash", "solid") != "solid" else "dash")
+                if st and st.get("width"):
+                    d["width"] = float(st["width"])
+                if st and st.get("color"):
+                    d["color"] = st["color"]
+                r = ("C", d["dash"], float(d.get("width", 2)), d.get("color", "#000000"))
+            cls_cache[ck] = r
+            return r
         for part in a["parts"]:
             PP = [toQ(p) for p in part["pts"]]
-            pv, ph = QPainterPath(), QPainterPath()
-            for ch in part["vis"]:
-                pv.moveTo(PP[ch[0]])
-                for v in ch[1:]:
-                    pv.lineTo(PP[v])
-            for ch in part["hid"]:
-                ph.moveTo(PP[ch[0]])
-                for v in ch[1:]:
-                    ph.lineTo(PP[v])
-            for sa, sb, v in part["extra"]:
-                path = pv if v else ph
-                path.moveTo(toQ(sa))
-                path.lineTo(toQ(sb))
+            pm = part["mesh"]
+            groups_ = {}       # 분류 → [(i, j)]
+            loose = {}         # 분류 → [(A, B)] 화면 좌표 조각
+            for flag, segs in ((True, part.get("seg_vis", [])), (False, part.get("seg_hid", []))):
+                for i, j in segs:
+                    k = ekey(pm, i, j, flag)
+                    info["edge_hits"].append((k, PP[i], PP[j], flag))
+                    c = cls(k, flag)
+                    if c is not None:
+                        groups_.setdefault(c, []).append((i, j))
+            for it in part["extra"]:
+                sa, sb, v = it[0], it[1], it[2]
+                A, B = toQ(sa), toQ(sb)
+                if len(it) > 3:
+                    k = ekey(pm, it[3][0], it[3][1], v)
+                    info["edge_hits"].append((k, A, B, v))
+                    c = cls(k, v)
+                else:
+                    c = "V" if v else "H"
+                if c is not None:
+                    loose.setdefault(c, []).append((A, B))
+            paths = {}
+            for c in set(groups_) | set(loose):
+                path = QPainterPath()
+                for ch in S.chains(groups_.get(c, [])):
+                    path.moveTo(PP[ch[0]])
+                    for v in ch[1:]:
+                        path.lineTo(PP[v])
+                for A, B in loose.get(c, []):
+                    path.moveTo(A)
+                    path.lineTo(B)
+                paths[c] = path
+            pv = paths.pop("V", QPainterPath())
+            ph = paths.pop("H", QPainterPath())
+            custom = [(path, {"dash": c[1], "width": c[2], "color": c[3]}) for c, path in paths.items()]
+            info["custom"] += custom
             vis.addPath(pv)
             hid.addPath(ph)
             mesh = part["mesh"]
@@ -850,7 +927,7 @@ class Geo:
             allpts += [PP[i] for i in used]
             hh = S.hull([(PP[i].x(), PP[i].y()) for i in used])
             pdraw.append({"vis": pv, "hid": ph, "hull": QPolygonF([QPointF(x, y) for x, y in hh]),
-                          "depth": part.get("depth", 0), "fills": []})
+                          "depth": part.get("depth", 0), "fills": [], "custom": custom})
             backs, fronts = [], []
             groups = {}
             for fi, f in enumerate(mesh.faces):
@@ -879,19 +956,31 @@ class Geo:
             R = sp["r"] * G
             ring = [toQ(q) for q in sp["ring"]]
             N = len(ring)
-            for flag, path in ((True, vis), (False, hid)):
+            for flag in (True, False):
+                c = cls("eq:" + ("v" if flag else "h"), flag)
+                path = QPainterPath()
                 k0 = next((k for k in range(N) if sp["front"][k] != flag and sp["front"][(k + 1) % N] == flag), None)
                 if k0 is None:
                     if all(f == flag for f in sp["front"]):
                         path.addPolygon(QPolygonF(ring + [ring[0]]))
-                    continue
-                k = (k0 + 1) % N
-                path.moveTo(ring[k])
-                while sp["front"][k] == flag:
-                    k = (k + 1) % N
-                    path.lineTo(ring[k])
-                    if k == (k0 + 1) % N:
-                        break
+                else:
+                    k = (k0 + 1) % N
+                    path.moveTo(ring[k])
+                    while sp["front"][k] == flag:
+                        k = (k + 1) % N
+                        path.lineTo(ring[k])
+                        if k == (k0 + 1) % N:
+                            break
+                pl = path.toSubpathPolygons()
+                for poly_ in pl:
+                    for q_ in range(poly_.size() - 1):
+                        info["edge_hits"].append(("eq:" + ("v" if flag else "h"), poly_[q_], poly_[q_ + 1], flag))
+                if c == "V":
+                    vis.addPath(path)
+                elif c == "H":
+                    hid.addPath(path)
+                elif c is not None:
+                    info["custom"].append((path, {"dash": c[1], "width": c[2], "color": c[3]}))
             C = toQ(a["proj"].screen(0, a["shift"], 0))
             outline = QPainterPath()
             outline.addEllipse(C, R, R)
@@ -911,9 +1000,19 @@ class Geo:
                 path.closeSubpath()
                 info["fills"].append((path, sec_col[0], sec_col[1]))
                 for sa, sb, v in sec["overlay"]:
-                    pth = vis if v else hid
-                    pth.moveTo(toQ(sa))
-                    pth.lineTo(toQ(sb))
+                    k = "sec:" + ("v" if v else "h")
+                    A, B = toQ(sa), toQ(sb)
+                    info["edge_hits"].append((k, A, B, v))
+                    c = cls(k, v)
+                    if c is None:
+                        continue
+                    if c in ("V", "H"):
+                        pth = vis if c == "V" else hid
+                    else:
+                        pth = QPainterPath()
+                        info["custom"].append((pth, {"dash": c[1], "width": c[2], "color": c[3]}))
+                    pth.moveTo(A)
+                    pth.lineTo(B)
         info["vis"], info["hid"] = vis, hid
         if allpts:
             h = S.hull([(p.x(), p.y()) for p in allpts])
@@ -1316,19 +1415,28 @@ class Renderer:
         p.setBrush(Qt.NoBrush)
         hs = o.get("hid_style", o["style"])
         show_h = o.get("show_hidden", True)
-        inner = o.get("host") is not None and o.get("inner_line") == "dash"
+        inner = o.get("host") is not None and o.get("inner_line") in ("dash", "hide")
         if sel:
             p.setPen(qpen(o["style"], 7, HALO))
             p.drawPath(info["vis"])
+            for path, st in info.get("custom", []):
+                if st["dash"] == "solid":
+                    p.drawPath(path)
             if info["outline"] is not None:
                 p.drawPath(info["outline"])
         if show_h and not info["hid"].isEmpty():
             p.setPen(qpen(hs))
             p.drawPath(info["hid"])
-        p.setPen(qpen(hs) if inner else qpen(o["style"]))
+        for path, st in info.get("custom", []):
+            p.setPen(qpen(st))
+            p.drawPath(path)
+        p.setPen(qpen(o["style"]))
         p.drawPath(info["vis"])
         if info["outline"] is not None:
-            p.drawPath(info["outline"])
+            if inner:
+                p.setPen(qpen(hs))
+            if o.get("inner_line") != "hide" or o.get("host") is None:
+                p.drawPath(info["outline"])
         dot_c = QColor(o["style"].get("color", "#000"))
         r = max(2.0, float(o["style"].get("width", 2)) * 1.4)
         p.setPen(Qt.NoPen)
@@ -1391,6 +1499,9 @@ class Renderer:
             if o.get("show_hidden", True) and not d_["hid"].isEmpty():
                 p.setPen(qpen(hs))
                 p.drawPath(d_["hid"])
+            for path, st in d_.get("custom", []):
+                p.setPen(qpen(st))
+                p.drawPath(path)
             p.setPen(qpen(o["style"]))
             p.drawPath(d_["vis"])
 

@@ -79,7 +79,13 @@ class PropertyPanel(QScrollArea):
         super().__init__()
         self.win = win
         self.setWidgetResizable(True)
-        self.setMinimumWidth(270)
+        self.setMinimumWidth(130)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._cols = None
+        self._rt = QTimer(self)
+        self._rt.setSingleShot(True)
+        self._rt.setInterval(120)
+        self._rt.timeout.connect(self.rebuild)
         self.setStyleSheet(PANEL_CSS)
         self.updaters = []
         self.rebuild()
@@ -120,6 +126,7 @@ class PropertyPanel(QScrollArea):
         form.setVerticalSpacing(3)
         form.setHorizontalSpacing(6)
         form.setLabelAlignment(Qt.AlignRight)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         body.setVisible(key not in PropertyPanel.collapsed)
 
         def toggle():
@@ -185,6 +192,15 @@ class PropertyPanel(QScrollArea):
         b.clicked.connect(fn)
         return b
 
+    def ncols(self):
+        w = self.viewport().width()
+        return 3 if w >= 250 else (2 if w >= 165 else 1)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._cols is not None and self.ncols() != self._cols:
+            self._rt.start()
+
     # ------------------------------------------------------------ 다시 만들기
     def refresh_info(self):
         for f in self.updaters:
@@ -215,6 +231,7 @@ class PropertyPanel(QScrollArea):
 
     def rebuild(self):
         self.updaters = []
+        self._cols = self.ncols()
         w = QWidget()
         self.lay = QVBoxLayout(w)
         self.lay.setContentsMargins(4, 4, 4, 4)
@@ -242,7 +259,8 @@ class PropertyPanel(QScrollArea):
             if objs[0]["type"] == "point":
                 title += f" {objs[0].get('label', '')}"
         else:
-            title = f"{len(objs)}개 선택됨"
+            gs = {o.get("group") for o in objs}
+            title = (f"그룹 ({len(objs)}개)" if len(gs) == 1 and None not in gs else f"{len(objs)}개 선택됨")
         head = QLabel(f"<span style='font-size:11pt'><b>{title}</b></span>")
         self.lay.addWidget(head)
 
@@ -326,6 +344,7 @@ class PropertyPanel(QScrollArea):
                     ob["show_labels"] = not S.is_curved(ob)
                     ob.pop("cut", None)
                     ob["face_colors"] = {}
+                    ob.pop("edge_styles", None)
                     if S.is_curved(ob):
                         ob["yaw"] = 0.0
                 self.apply(tg, "skind", f)
@@ -339,6 +358,7 @@ class PropertyPanel(QScrollArea):
                         if is_int:
                             ob["labels"] = list(S.build(ob["kind"], ob["params"]).names)
                             ob["lab_off"] = {}
+                            ob.pop("edge_styles", None)
                     self.apply(tg, "sp" + key, f)
                     if is_int:
                         self.drop_solid_braces(tg)
@@ -403,7 +423,53 @@ class PropertyPanel(QScrollArea):
         tip.setWordWrap(True)
         form.addRow(tip)
 
+        # ---- 놓는 방향 (옆으로 눕히기)
+        form = self.group("놓는 방향 (눕히기)")
+        orow = QWidget()
+        og = QGridLayout(orow)
+        og.setContentsMargins(0, 0, 0, 0)
+        og.setSpacing(3)
+        short_o = {"down": "세우기", "up": "거꾸로", "right": "밑면 →", "left": "← 밑면", "front": "밑면 앞", "back": "밑면 뒤"}
+        nc = 3 if (self._cols or 3) >= 2 else 2
+
+        def set_orient(tz, tx):
+            def f(ob):
+                ob["tz"], ob["tx"] = float(tz), float(tx)
+            self.apply(frames, "orient", f)
+            QTimer.singleShot(0, self.rebuild)
+        for k_, (key, name, tz, tx) in enumerate(S.ORIENTS):
+            b = QPushButton(short_o[key])
+            b.setToolTip(name)
+            b.setMinimumWidth(10)
+            b.clicked.connect(lambda _=False, tz=tz, tx=tx: set_orient(tz, tx))
+            og.addWidget(b, k_ // nc, k_ % nc)
+        form.addRow(orow)
+        for key, name, lo, hi in (("tz", "옆으로", -180, 180), ("tx", "앞뒤로", -90, 90)):
+            r = QWidget()
+            h = QHBoxLayout(r)
+            h.setContentsMargins(0, 0, 0, 0)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(lo, hi)
+            sl.setValue(int(round(float(o.get(key, 0)))))
+            lab = QLabel(f"{sl.value()}°")
+            lab.setFixedWidth(36)
+
+            def ch(v, key=key, lab=lab):
+                lab.setText(f"{v}°")
+                self.apply(frames, "s" + key, lambda ob: ob.__setitem__(key, float(v)))
+            sl.valueChanged.connect(ch)
+            h.addWidget(sl)
+            h.addWidget(lab)
+            form.addRow(name, r)
+        if any(fo.get("host") is not None for fo in tg):
+            tip = QLabel("※ 안에 넣은 입체는 바깥 입체의 방향을 따릅니다.")
+            tip.setStyleSheet("color:#666")
+            tip.setWordWrap(True)
+            form.addRow(tip)
+
         o = tg[0]
+        if len(tg) == 1:
+            self.build_edge_pick(tg, o)
         form = self.group("숨은 선 (보이지 않는 모서리)")
         form.addRow(self.check("숨은 선 보이기", o.get("show_hidden", True),
                                lambda v: self.apply(tg, "shid", lambda ob: ob.__setitem__("show_hidden", v))))
@@ -577,14 +643,90 @@ class PropertyPanel(QScrollArea):
         if o.get("host") is not None:
             form.addRow("맞추기", self.combo([("bottom", "밑면 맞춤"), ("center", "가운데 맞춤")], o.get("align", "bottom"),
                                           lambda v: self.apply(tg, "align", lambda ob: ob.__setitem__("align", v))))
-            form.addRow("안쪽 선", self.combo([("solid", "실선 (투명하게)"), ("dash", "점선 (가려진 것처럼)")],
+            form.addRow("안쪽 선", self.combo([("solid", "자동 (숨은 선만 점선)"), ("allsolid", "모두 실선"),
+                                            ("dash", "모두 점선"), ("hide", "숨김 (색칠만)")],
                                            o.get("inner_line", "solid"),
                                            lambda v: self.apply(tg, "inl", lambda ob: ob.__setitem__("inner_line", v))))
             tip = QLabel("※ 바깥 입체와 함께 움직이고 함께 돕니다.")
             tip.setStyleSheet("color:#666")
             form.addRow(tip)
 
+    # ------------------------------------------------------------ 선 고르기
+    def build_edge_pick(self, tg, o):
+        w = self.win
+        cv = w.canvas
+        ep = cv.edge_pick if cv.edge_pick and cv.edge_pick["sid"] == o["id"] else None
+        form = self.group("선마다 실선·점선")
+        on = ep is not None
+        b = self.button("선 고르기 끝내기" if on else "선 고르기", lambda _=False: cv.start_edge_pick(o["id"]))
+        if on:
+            b.setStyleSheet("background:#d6e6fb; border:1px solid #2f80ed; border-radius:3px;")
+        es = o.get("edge_styles") or {}
+        clr = self.button("모두 자동으로", lambda _=False: (self.apply(tg, "esclear", lambda ob: ob.pop("edge_styles", None)),
+                                                       QTimer.singleShot(0, self.rebuild)))
+        clr.setEnabled(bool(es))
+        form.addRow(self.hrow(b, clr))
+        if not ep:
+            tip = QLabel(f"바꾼 선 {len(es)}개" if es else "보이는 선은 실선, 가려진 선은 점선 (자동)")
+            tip.setStyleSheet("color:#666")
+            tip.setWordWrap(True)
+            form.addRow(tip)
+            return
+        keys = list(ep["keys"])
+        if not keys:
+            tip = QLabel("입체도형의 선을 클릭하세요.\nShift+클릭: 여러 개 고르기\n원은 앞쪽 반·뒤쪽 반을 따로 고릅니다.")
+            tip.setStyleSheet("color:#2f80ed")
+            form.addRow(tip)
+            return
+        cur = es.get(keys[0]) or {}
+        lab = QLabel(f"고른 선 {len(keys)}개")
+        lab.setStyleSheet("color:#2f80ed; font-weight:bold")
+        form.addRow(lab)
+
+        def setk(field, val):
+            def f(ob):
+                d = ob.setdefault("edge_styles", {})
+                for k in keys:
+                    st = dict(d.get(k) or {"mode": "auto"})
+                    if val is None:
+                        st.pop(field, None)
+                    else:
+                        st[field] = val
+                    if st.get("mode", "auto") == "auto" and not st.get("width") and not st.get("color"):
+                        d.pop(k, None)
+                    else:
+                        d[k] = st
+            self.apply(tg, "es" + field, f)
+        form.addRow("선", self.combo([("auto", "자동"), ("solid", "실선"), ("dash", "점선"), ("hide", "숨김")],
+                                    cur.get("mode", "auto"), lambda v: setk("mode", v)))
+        base_w = float(cur.get("width") or o["style"].get("width", 2))
+        wrow = self.spin(base_w, 0.25, 12, 0.25, lambda v: setk("width", float(v)), decimals=2)
+        col = ColorButton(cur.get("color") or o["style"].get("color", "#000000"), lambda c: setk("color", c))
+        form.addRow(self.hrow("굵기", wrow, "색", col))
+        form.addRow(self.button("고른 선 자동으로", lambda _=False: (
+            self.apply(tg, "esk", lambda ob: [(ob.get("edge_styles") or {}).pop(k, None) for k in keys]),
+            QTimer.singleShot(0, self.rebuild))))
+
     # ------------------------------------------------------------ 쌓기 층
+    LAYER_KINDS_C = [("cyl", "원기둥"), ("cone", "원뿔"), ("rcone", "거꾸로 원뿔"), ("frus", "원뿔대"),
+                     ("dome", "반구 (위로 볼록)"), ("bowl", "반구 (아래로 볼록)")]
+    LAYER_KINDS_P = [("cyl", "각기둥"), ("cone", "각뿔"), ("rcone", "거꾸로 각뿔"), ("frus", "각뿔대"),
+                     ("dome", "반구 모양 (위)"), ("bowl", "반구 모양 (아래)")]
+
+    @staticmethod
+    def layer_kind(L):
+        sh = L.get("shape", "line")
+        if sh in ("dome", "bowl"):
+            return sh
+        r1, r2 = float(L.get("r1", 1)), float(L.get("r2", 1))
+        if abs(r1 - r2) < 1e-9:
+            return "cyl"
+        if r2 <= 1e-9:
+            return "cone"
+        if r1 <= 1e-9:
+            return "rcone"
+        return "frus"
+
     def build_stack_layers(self, form, tg, o):
         def setp(fn, key="stk"):
             def f(ob):
@@ -592,49 +734,145 @@ class PropertyPanel(QScrollArea):
                 ob["labels"] = list(S.build(ob["kind"], ob["params"]).names)
                 ob["lab_off"] = {}
                 ob.pop("cut", None)
+                ob.pop("edge_styles", None)
             self.apply(tg, key, f)
             self.drop_solid_braces(tg)
 
+        def later():
+            QTimer.singleShot(0, self.rebuild)
+        poly = int(o["params"].get("n", 0)) > 0
         form.addRow("밑면", self.combo([(0, "원 (회전체)")] + [(k, f"정{k}각형") for k in range(3, 13)],
                                      int(o["params"].get("n", 0)),
-                                     lambda v: (setp(lambda pp: pp.__setitem__("n", int(v))), QTimer.singleShot(0, self.rebuild))))
+                                     lambda v: (setp(lambda pp: pp.__setitem__("n", int(v))), later())))
         presets = [("", "모양 고르기…")] + [(k, k) for k in S.STACK_PRESETS]
 
         def use_preset(k):
             if k:
                 setp(lambda pp: pp.__setitem__("layers", [dict(l) for l in S.STACK_PRESETS[k]]))
-                QTimer.singleShot(0, self.rebuild)
+                later()
         form.addRow("예시", self.combo(presets, "", use_preset))
         layers = o["params"].get("layers", [])
+        kinds = self.LAYER_KINDS_P if poly else self.LAYER_KINDS_C
+        rname = "반지름"
+
+        def top_r(idx):
+            """idx 층 바로 아래 층의 윗면 반지름 (모양을 바꿀 때 크기를 이어 맞춤)"""
+            if idx <= 0:
+                return None
+            P = layers[idx - 1]
+            sh = P.get("shape", "line")
+            if sh == "dome":
+                return float(P.get("r1", 1.5))
+            v = float(P.get("r2", 0))
+            return v if v > 1e-9 else (float(P.get("r1", 1.5)) or 1.5)
+
+        def set_kind(idx, kd):
+            def fn(pp):
+                L = pp["layers"][idx]
+                base = top_r(idx) or max(float(L.get("r1", 0)), float(L.get("r2", 0)), 1.5)
+                h = float(L.get("h", 2.0))
+                if kd == "cyl":
+                    L.update(shape="line", r1=base, r2=base, h=h)
+                elif kd == "cone":
+                    L.update(shape="line", r1=base, r2=0.0, h=h)
+                elif kd == "rcone":
+                    L.update(shape="line", r1=0.0, r2=base, h=h)
+                elif kd == "frus":
+                    L.update(shape="line", r1=base, r2=round(base * 0.5, 1), h=h)
+                elif kd == "dome":
+                    L.update(shape="dome", r1=base, r2=0.0, h=base)
+                else:
+                    L.update(shape="bowl", r1=0.0, r2=base, h=base)
+            setp(fn, key=f"stk{idx}kind")
+            later()
+
+        def sp(val, lo, cb):
+            b = self.spin(float(val), lo, 30, 0.5, cb)
+            b.setMaximumWidth(58)
+            b.setMinimumWidth(46)
+            return b
         for idx in range(len(layers) - 1, -1, -1):
             L = layers[idx]
-            box = QWidget()
-            gl = QGridLayout(box)
-            gl.setContentsMargins(0, 0, 0, 0)
+            kd = self.layer_kind(L)
 
             def setl(key, val, idx=idx):
                 setp(lambda pp: pp["layers"][idx].__setitem__(key, val), key=f"stk{idx}{key}")
-            shp = self.combo(S.LAYER_SHAPES, L.get("shape", "line"),
-                             lambda v, idx=idx: (setl("shape", v, idx), QTimer.singleShot(0, self.rebuild)))
-            gl.addWidget(shp, 0, 0, 1, 3)
-            if L.get("shape", "line") == "line":
-                for c_, (key, nm) in enumerate((("r1", "아래 r"), ("r2", "위 r"), ("h", "높이"))):
-                    sp = self.spin(float(L.get(key, 1)), 0 if key != "h" else 0.1, 30, 0.5,
-                                   lambda v, key=key, idx=idx: setl(key, v, idx))
-                    sp.setPrefix(nm + " ")
-                    gl.addWidget(sp, 1, c_)
+
+            def setboth(val, idx=idx):
+                def fn(pp):
+                    pp["layers"][idx]["r1"] = val
+                    pp["layers"][idx]["r2"] = val
+                setp(fn, key=f"stk{idx}r")
+            box = QWidget()
+            vb = QVBoxLayout(box)
+            vb.setContentsMargins(0, 2, 0, 2)
+            vb.setSpacing(2)
+            head = QWidget()
+            hh = QHBoxLayout(head)
+            hh.setContentsMargins(0, 0, 0, 0)
+            hh.setSpacing(3)
+            t = QLabel(f"<b>{idx + 1}층</b>")
+            t.setFixedWidth(30)
+            hh.addWidget(t)
+            cb_ = self.combo(kinds, kd, lambda v, idx=idx: set_kind(idx, v))
+            cb_.setMinimumWidth(60)
+            hh.addWidget(cb_, 1)
+
+            def move(idx, d):
+                def fn(pp):
+                    j = idx + d
+                    pp["layers"][idx], pp["layers"][j] = pp["layers"][j], pp["layers"][idx]
+                setp(fn, key="stkmove")
+                later()
+            for txt, d, ok in (("▲", 1, idx < len(layers) - 1), ("▼", -1, idx > 0)):
+                mb = QToolButton()
+                mb.setText(txt)
+                mb.setToolTip("위층과 바꾸기" if d > 0 else "아래층과 바꾸기")
+                mb.setEnabled(ok)
+                mb.clicked.connect(lambda _=False, idx=idx, d=d: move(idx, d))
+                hh.addWidget(mb)
+            xb = QToolButton()
+            xb.setText("✕")
+            xb.setToolTip("이 층 지우기")
+            xb.setEnabled(len(layers) > 1)
+            xb.clicked.connect(lambda _=False, idx=idx: (setp(lambda pp: pp["layers"].pop(idx)), later()))
+            hh.addWidget(xb)
+            vb.addWidget(head)
+            if kd == "cyl":
+                row = self.hrow(rname, sp(L.get("r1", 1), 0.1, setboth), "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+            elif kd == "cone":
+                row = self.hrow(rname, sp(L.get("r1", 1), 0.1, lambda v, idx=idx: setl("r1", v, idx)),
+                                "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+            elif kd == "rcone":
+                row = self.hrow(rname, sp(L.get("r2", 1), 0.1, lambda v, idx=idx: setl("r2", v, idx)),
+                                "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+            elif kd == "frus":
+                row = QWidget()
+                g2 = QGridLayout(row)
+                g2.setContentsMargins(0, 0, 0, 0)
+                g2.setHorizontalSpacing(4)
+                g2.setVerticalSpacing(2)
+                for c_, (key, nm) in enumerate((("r1", "아래"), ("r2", "위"), ("h", "높이"))):
+                    lb = QLabel(nm)
+                    lb.setStyleSheet("color:#444")
+                    g2.addWidget(lb, 0 if c_ < 2 else 1, (c_ % 2) * 2)
+                    g2.addWidget(sp(L.get(key, 1), 0.1, lambda v, key=key, idx=idx: setl(key, v, idx)),
+                                 0 if c_ < 2 else 1, (c_ % 2) * 2 + 1)
+                g2.setColumnStretch(4, 1)
             else:
-                key = "r1" if L["shape"] == "dome" else "r2"
-                sp = self.spin(float(L.get(key, 1)), 0.1, 30, 0.5, lambda v, key=key, idx=idx: setl(key, v, idx))
-                sp.setPrefix("반지름 ")
-                gl.addWidget(sp, 1, 0, 1, 2)
-            gl.addWidget(self.button("✕", lambda _=False, idx=idx: (
-                setp(lambda pp: pp["layers"].pop(idx)) if len(layers) > 1 else None,
-                QTimer.singleShot(0, self.rebuild))), 0, 3)
-            form.addRow(f"{idx + 1}층" + (" (맨 위)" if idx == len(layers) - 1 else ""), box)
+                key = "r1" if kd == "dome" else "r2"
+                row = self.hrow("반지름", sp(L.get(key, 1), 0.1, lambda v, key=key, idx=idx: setl(key, v, idx)))
+            vb.addWidget(row)
+            if idx:
+                line = QWidget()
+                line.setFixedHeight(1)
+                line.setStyleSheet("background:#dde3ea")
+                vb.addWidget(line)
+            form.addRow(box)
         form.addRow(self.button("＋ 층 추가 (맨 위)", lambda _=False: (
-            setp(lambda pp: pp["layers"].append({"shape": "line", "r1": 1.0, "r2": 1.0, "h": 2.0})),
-            QTimer.singleShot(0, self.rebuild))))
+            setp(lambda pp: pp["layers"].append({"shape": "line", "r1": top_r(len(layers)) or 1.5,
+                                                 "r2": top_r(len(layers)) or 1.5, "h": 2.0})),
+            later())))
 
     def drop_solid_braces(self, tg):
         """모양이 바뀌어 꼭짓점 번호가 달라지면 그 입체에 붙인 길이 표시는 지웁니다."""
@@ -1008,12 +1246,18 @@ class PropertyPanel(QScrollArea):
         segs = [o for o in objs if o["type"] == "segment"]
         if len(segs) > 1:
             btns += [("선분마다 같은 눈금", lambda: [w.add_tick(s["id"]) for s in segs])]
+        if len(objs) > 1:
+            btns += [("그룹으로 묶기", w.group_selection)]
+        if any(o.get("group") is not None for o in objs):
+            btns += [("그룹 풀기", w.ungroup_selection)]
         btns += [("숨기기", w.hide_selection), ("삭제", w.delete_selection)]
         short = {"길이 측정값 표시": "길이값", "같은 길이 눈금": "같은 길이", "모든 변에 길이 표시": "변 길이 모두",
                  "모든 내각 표시": "내각 모두", "각도 측정값 표시": "각도값", "호의 길이 표시": "호의 길이",
-                 "선분마다 같은 눈금": "같은 눈금"}
+                 "선분마다 같은 눈금": "같은 눈금", "그룹으로 묶기": "그룹"}
+        nc = self._cols or 3
         for k, (text, fn) in enumerate(btns):
             b = self.button(short.get(text, text), lambda _=False, fn=fn: fn())
             b.setToolTip(text)
-            grid.addWidget(b, k // 3, k % 3)
+            b.setMinimumWidth(10)
+            grid.addWidget(b, k // nc, k % nc)
         self.lay.addWidget(box)

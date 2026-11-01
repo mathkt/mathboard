@@ -52,6 +52,13 @@ STACK_PRESETS = {
     "계단 (원기둥+작은 원기둥)": [{"shape": "line", "r1": 2.5, "r2": 2.5, "h": 2.0}, {"shape": "line", "r1": 1.2, "r2": 1.2, "h": 2.5}],
 }
 
+STACK_PRESETS["직접 만들기 (1층부터)"] = [{"shape": "line", "r1": 2.0, "r2": 2.0, "h": 2.0}]
+
+# 놓는 방향: (키, 이름, tz, tx)  — 밑면(아랫면)이 향하는 쪽
+ORIENTS = [("down", "세우기 (밑면이 아래)", 0.0, 0.0), ("up", "거꾸로 (밑면이 위)", 180.0, 0.0),
+           ("right", "눕히기 (밑면이 오른쪽)", 90.0, 0.0), ("left", "눕히기 (밑면이 왼쪽)", -90.0, 0.0),
+           ("front", "눕히기 (밑면이 앞쪽)", 0.0, 90.0), ("back", "눕히기 (밑면이 뒤쪽)", 0.0, -90.0)]
+
 SEG = 72          # 곡면을 나누는 개수
 OBL = 0.5 * math.cos(math.radians(45))   # 겨냥도: 깊이 방향 45°, 길이 1/2
 
@@ -323,11 +330,14 @@ def clip(m, n, d):
         q = Mesh()
         q.convex = m.convex
         q.sphere_r = None
+        q.src = {}       # 새 점 → ("v", 원래 점) / ("e", 원래 모서리)
+        q.parent = m
         vmap, emap = {}, {}
 
         def keep(i):
             if i not in vmap:
                 vmap[i] = q.add(*m.v[i])
+                q.src[vmap[i]] = ("v", i)
             return vmap[i]
 
         def cut(i, j):
@@ -336,6 +346,7 @@ def clip(m, n, d):
                 t = dist[i] / (dist[i] - dist[j])
                 a, b = m.v[i], m.v[j]
                 emap[key] = q.add(*(a[k] + (b[k] - a[k]) * t for k in range(3)))
+                q.src[emap[key]] = ("e", key)
             return emap[key]
 
         inside = (lambda s: s <= eps) if side < 0 else (lambda s: s >= -eps)
@@ -548,6 +559,12 @@ def section_name(sec, kind, curved):
 def effective_view(o):
     """곡면 입체의 '겨냥도'는 살짝 위에서 본 모습으로 그립니다."""
     if o.get("view") == "oblique" and is_curved(o):
+        tz = (float(o.get("tz", 0)) + 180) % 360 - 180
+        tx = float(o.get("tx", 0))
+        if abs(tx) > 20:            # 앞뒤로 눕힘: 비스듬히 봐야 원이 납작하게 보임
+            return "rot", -35.0, 20.0
+        if 30 < abs(tz) < 150:      # 옆으로 눕힘: 밑면이 보이도록 살짝 돌려서
+            return "rot", (30.0 if tz > 0 else -30.0), 15.0
         return "rot", 0.0, 20.0
     return o.get("view", "rot"), float(o.get("yaw", -30)), float(o.get("pitch", 20))
 
@@ -557,8 +574,22 @@ class Projector:
         self.view, yaw, pitch = effective_view(o)
         a, b = math.radians(yaw), math.radians(pitch)
         self.cy, self.sy, self.cp, self.sp = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
+        tz, tx = math.radians(float(o.get("tz", 0))), math.radians(float(o.get("tx", 0)))
+        self.oriented = abs(tz) > 1e-9 or abs(tx) > 1e-9
+        self.cz, self.sz, self.cx, self.sx = math.cos(tz), math.sin(tz), math.cos(tx), math.sin(tx)
+
+    def orient(self, x, y, z):
+        """놓는 방향: z축으로 tz 돌리고(옆으로 눕히기) x축으로 tx 돌림(앞뒤로 눕히기)"""
+        if not self.oriented:
+            return x, y, z
+        x1 = x * self.cz - y * self.sz
+        y1 = x * self.sz + y * self.cz
+        y2 = y1 * self.cx - z * self.sx
+        z2 = y1 * self.sx + z * self.cx
+        return x1, y2, z2
 
     def rot(self, x, y, z):
+        x, y, z = self.orient(x, y, z)
         if self.view == "oblique":
             return x, y, z
         x1 = x * self.cy + z * self.sy
@@ -570,6 +601,7 @@ class Projector:
     def screen(self, x, y, z):
         """cm → 화면(오른쪽 x, 아래 y) cm"""
         if self.view == "oblique":
+            x, y, z = self.orient(x, y, z)
             return x + OBL * z, -(y + OBL * z)
         x1, y1, _ = self.rot(x, y, z)
         return x1, -y1
@@ -578,7 +610,7 @@ class Projector:
         """면의 바깥 법선 n 이 보는 사람 쪽이면 True"""
         if self.view == "oblique":
             v = (-OBL, -OBL, 1.0)
-            nx, ny, nz = n
+            nx, ny, nz = self.orient(*n)
         else:
             v = (0.0, 0.0, 1.0)
             nx, ny, nz = self.rot(*n)
@@ -586,8 +618,67 @@ class Projector:
 
     def depth(self, x, y, z):
         if self.view == "oblique":
+            x, y, z = self.orient(x, y, z)
             return z - OBL * x - OBL * y
         return self.rot(x, y, z)[2]
+
+
+def edge_keys(m, curved):
+    """모서리마다 '선 고르기' 이름: 다면체는 모서리 하나씩, 곡면 입체는 원(고리) 하나씩, 옆선(윤곽)은 sil"""
+    out = {}
+    nonsmooth = set()
+    for f in m.faces:
+        for k in range(len(f)):
+            e = frozenset((f[k], f[(k + 1) % len(f)]))
+            if len(e) < 2:
+                continue
+            if e in m.smooth:
+                out[e] = "sil"
+            else:
+                nonsmooth.add(e)
+    if not curved:
+        for e in nonsmooth:
+            i, j = sorted(e)
+            out[e] = f"e{i}-{j}"
+        return out, set()
+    par = {}
+
+    def find(a):
+        while par.get(a, a) != a:
+            par[a] = par.get(par[a], par[a])
+            a = par[a]
+        return a
+    for e in nonsmooth:
+        i, j = tuple(e)
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            par[max(ri, rj)] = min(ri, rj)
+    rings = set()
+    for e in nonsmooth:
+        i, _ = tuple(e)
+        k = f"r{find(i)}"
+        out[e] = k
+        rings.add(k)
+    return out, rings
+
+
+def part_edge(part_mesh, i, j):
+    """잘린 조각의 모서리 → 원래 입체의 모서리(frozenset) 또는 None(단면 선)"""
+    src = getattr(part_mesh, "src", None)
+    if src is None:
+        return frozenset((i, j))
+    a, b = src.get(i), src.get(j)
+    if a is None or b is None:
+        return None
+    if a[0] == "v" and b[0] == "v":
+        return frozenset((a[1], b[1]))
+    if a[0] == "v" and b[0] == "e" and a[1] in b[1]:
+        return b[1]
+    if b[0] == "v" and a[0] == "e" and b[1] in a[1]:
+        return a[1]
+    if a[0] == "e" and b[0] == "e" and a[1] == b[1]:
+        return a[1]
+    return None
 
 
 def chains(segs):
@@ -714,18 +805,21 @@ def analyze_mesh(m, pr, offset=(0.0, 0.0, 0.0)):
         occ = _occluded_flags(m, pr, offset, fronts, samples)
         vis = []
         hid_extra = []
-        for (pa, pb, _e), o_ in zip(pieces, occ):
+        for (pa, pb, e_), o_ in zip(pieces, occ):
             sa = pr.screen(pa[0] + ox, pa[1] + oy, pa[2] + oz)
             sb = pr.screen(pb[0] + ox, pb[1] + oy, pb[2] + oz)
-            (hid_extra if o_ else extra).append((sa, sb))
+            (hid_extra if o_ else extra).append((sa, sb, e_))
         vis_chains = []
-        extra = [(a, b, True) for a, b in extra] + [(a, b, False) for a, b in hid_extra]
+        seg_vis = []
+        extra = [(a, b, True, e_) for a, b, e_ in extra] + [(a, b, False, e_) for a, b, e_ in hid_extra]
         edges = [(i, j, v) for i, j, v in edges]
     else:
         vis_chains = chains(vis)
+        seg_vis = list(vis)
     dep = [pr.depth(x + ox, y + oy, z + oz) for x, y, z in m.v] or [0.0]
     return {"mesh": m, "pts": pts, "fronts": fronts, "vis": vis_chains, "hid": chains(hid),
-            "edges": edges, "extra": extra, "offset": offset, "depth": sum(dep) / len(dep)}
+            "edges": edges, "extra": extra, "offset": offset, "depth": sum(dep) / len(dep),
+            "seg_vis": seg_vis, "seg_hid": list(hid)}
 
 
 # ---------------------------------------------------------------- 한 입체 전체 (자르기·벌리기 포함)

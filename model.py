@@ -312,20 +312,25 @@ def make_solid_brace(doc, sid, i, j):
     return doc.add(o)
 
 
-def make_solid(doc, kind, x, y, params=None):
+def make_solid(doc, kind, x, y, params=None, tz=0.0, tx=0.0):
+    return doc.add(solid_dict(doc, kind, x, y, params, tz, tx))
+
+
+def solid_dict(doc, kind, x, y, params=None, tz=0.0, tx=0.0):
     p = S.default_params(kind)
     if params:
         p.update(params)
     mesh = S.build(kind, p)
     curved = S.is_curved({"kind": kind, "params": p})
     lw = doc.settings.get("line_width", 2.0)
-    return doc.add({
+    return ({
         "type": "solid", "kind": kind, "params": p, "x": float(x), "y": float(y),
         "view": "oblique", "yaw": 0.0 if curved else -30.0, "pitch": 20.0,
         "style": new_style(doc), "hid_style": new_style(doc, width=lw, dash="dash"),
         "show_hidden": True, "fill": "#4a90e2", "alpha": 0,
         "labels": list(mesh.names), "show_labels": not curved, "show_dots": False,
         "lab_off": {}, "font": copy.deepcopy(doc.settings["font"]), "text_color": "#000000",
+        "tz": float(tz), "tx": float(tx),
     })
 
 
