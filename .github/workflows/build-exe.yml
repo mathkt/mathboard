@@ -1,4 +1,6 @@
-# Releases 에서 새 버전(v1.7 등)을 발행하면 Windows에서 exe를 만들어 그 버전에 붙입니다.
+# exe 만들기
+# - Actions 탭에서 'Run workflow' 를 누르면: main.py 의 APP_VERSION 으로 새 버전(v1.7 등)을 만들고 exe 를 붙입니다.
+# - Releases 에서 직접 새 버전을 발행해도: exe 를 만들어 그 버전에 붙입니다.
 name: exe 만들기
 
 on:
@@ -18,7 +20,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: 부품 설치
         run: python -m pip install PySide6-Essentials pyinstaller numpy
@@ -26,8 +27,10 @@ jobs:
       - name: exe 만들기
         run: python -m PyInstaller --noconfirm --onefile --windowed --add-data "fonts;fonts" --name mdraw main.py
 
-      - name: 확인
-        run: dir dist
+      - name: 버전 읽기
+        id: ver
+        shell: bash
+        run: echo "v=$(python -c "import re;print(re.search(r'APP_VERSION = \"(.+?)\"', open('main.py', encoding='utf-8').read()).group(1))")" >> "$GITHUB_OUTPUT"
 
       - name: 발행한 버전에 exe 붙이기
         if: github.event_name == 'release'
@@ -35,9 +38,16 @@ jobs:
         with:
           files: dist/mdraw.exe
 
-      - name: 만든 exe 보관 (직접 실행했을 때)
+      - name: 새 버전 만들고 exe 붙이기
         if: github.event_name != 'release'
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: mdraw
-          path: dist/mdraw.exe
+          tag_name: v${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          name: 도형그리기 ${{ steps.ver.outputs.v }}
+          files: dist/mdraw.exe
+          make_latest: true
+          body: |
+            **mdraw.exe** 하나만 받아서 실행하면 됩니다. (설치·파이썬 필요 없음)
+            처음 실행할 때 Windows가 'PC 보호' 경고를 띄우면 **추가 정보 → 실행**을 누르세요.
+            바뀐 점은 저장소의 사용법.txt 를 보세요.
