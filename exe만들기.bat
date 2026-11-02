@@ -37,7 +37,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo [2/3] exe 만드는 중... (몇 분 걸립니다)
-%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --add-data "fonts;fonts" --name 도형그리기 main.py
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --name 도형그리기 main.py
 if errorlevel 1 (
   echo [오류] exe 를 만들지 못했습니다. 위의 메시지를 캡처해서 보내주세요.
   pause

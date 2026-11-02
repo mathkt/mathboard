@@ -237,7 +237,7 @@ class Geo:
                     A, B = P[q["edge"][0]], P[q["edge"][1]]
                     t = float(q.get("t", 0.5))
                     q["x"], q["y"] = A.x() + (B.x() - A.x()) * t, A.y() + (B.y() - A.y()) * t
-                elif q.get("dep3"):
+                elif q.get("dep3") or q.get("face") is not None or q.get("ring") is not None:
                     xyz = M.attached_xyz(doc, q)
                     if xyz is None:
                         self.undef.add(q["id"])
@@ -934,6 +934,7 @@ class Geo:
                 g = mesh.groups[fi]
                 poly = QPolygonF([PP[i] for i in f])
                 info["faces"].append((g, part["fronts"][fi], poly))
+                info.setdefault("face_fi", []).append(fi if pm is a["mesh"] else None)
                 col = colors.get(g)
                 if col is None and g == "단면":
                     col = sec_col

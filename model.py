@@ -405,6 +405,10 @@ def attached_xyz(doc, q):
         return S.point3d(so, sv=q["sv"])
     if q.get("edge"):
         return S.point3d(so, edge=q["edge"], t=float(q.get("t", 0.5)))
+    if q.get("face") is not None:
+        return S.face_point(S.build(so["kind"], so["params"]), int(q["face"]), float(q.get("fa", 0)), float(q.get("fb", 0)))
+    if q.get("ring") is not None:
+        return S.ring_point(S.build(so["kind"], so["params"]), int(q["ring"]), float(q.get("ang", 0)))
     d3 = q.get("dep3")
     if d3:
         P = attached_xyz(doc, doc.objects.get(d3.get("p"), {}))
@@ -471,8 +475,8 @@ def angle_value(doc, o):
     return angle_span(doc, o)[1]
 
 
-def make_attached_point(doc, sid, sv=None, edge=None, t=0.5):
-    """입체의 꼭짓점(sv) 또는 모서리(edge) 위 점"""
+def make_attached_point(doc, sid, sv=None, edge=None, t=0.5, face=None, fa=0.0, fb=0.0, ring=None, ang=0.0):
+    """입체의 꼭짓점(sv), 모서리(edge) 위, 면(face) 위, 원 둘레(ring) 위 점"""
     for q in doc.items("point"):
         if q.get("solid") == sid:
             if sv is not None and q.get("sv") == sv:
@@ -484,6 +488,10 @@ def make_attached_point(doc, sid, sv=None, edge=None, t=0.5):
         o["sv"] = int(sv)
         o["show_dot"] = False
         o["show_label"] = False
+    elif face is not None:
+        o["face"], o["fa"], o["fb"] = int(face), float(fa), float(fb)
+    elif ring is not None:
+        o["ring"], o["ang"] = int(ring), float(ang)
     else:
         o["edge"] = [int(edge[0]), int(edge[1])]
         o["t"] = float(t)

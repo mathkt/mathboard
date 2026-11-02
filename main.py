@@ -28,12 +28,12 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 
 TOOLS = [
-    ("select", "선택", "V"),
+    ("select", "선택", "S"),
     ("point", "점", "P"),
-    ("segment", "선분", "S"),
+    ("segment", "선분", "V"),
     ("line", "직선", "L"),
     ("ray", "반직선", "R"),
     ("polygon", "다각형", "G"),
@@ -42,6 +42,7 @@ TOOLS = [
     ("arc", "호·부채꼴", "Q"),
     ("solid", "입체도형", "K"),
     None,
+    ("#", "작도"),
     ("mid", "중점", "D"),
     ("pbis", "수직이등분", "H"),
     ("abis", "각이등분", "J"),
@@ -316,21 +317,56 @@ class ToolPanel(QWidget):
         self.grid.setSizeConstraint(QGridLayout.SetNoConstraint)
         self.grid.setContentsMargins(3, 3, 3, 3)
         self.grid.setSpacing(3)
-        self.items = []        # ("btn", 단추) / ("sep", 선) / ("wide", 칸, 좁을 때 함수)
+        self.items = []        # (종류, 위젯, 좁을 때 함수, 묶음)  종류: btn / sep / wide / head
         self.layout_key = None
+        self.sec = None
+        try:
+            v = qsettings().value("tools_collapsed", "")
+            self.collapsed = set(str(v).split("|")) - {""} if v else set()
+        except Exception:
+            self.collapsed = set()
 
     def add_button(self, b):
-        self.items.append(("btn", b))
+        self.items.append(("btn", b, None, self.sec))
 
     def add_sep(self):
+        self.sec = None
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setStyleSheet("color:#ccc")
-        self.items.append(("sep", line))
+        self.items.append(("sep", line, None, None))
+
+    def add_header(self, title):
+        """접을 수 있는 묶음 제목 (예: 작도)"""
+        self.sec = title
+        h = QToolButton()
+        h.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        h.setText(title)
+        h.setAutoRaise(True)
+        h.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        h.setStyleSheet("QToolButton{font-weight:bold; color:#345; text-align:left; padding:1px 2px;}"
+                        "QToolButton:hover{background:#e8eef6; border-radius:3px;}")
+        h.setArrowType(Qt.RightArrow if title in self.collapsed else Qt.DownArrow)
+        h.setToolTip("눌러서 접기/펴기")
+        h.clicked.connect(lambda _=False, t=title, h=h: self.toggle(t, h))
+        self.items.append(("head", h, None, None))
+
+    def toggle(self, title, h):
+        if title in self.collapsed:
+            self.collapsed.discard(title)
+        else:
+            self.collapsed.add(title)
+        h.setArrowType(Qt.RightArrow if title in self.collapsed else Qt.DownArrow)
+        try:
+            qsettings().setValue("tools_collapsed", "|".join(sorted(self.collapsed)))
+        except Exception:
+            pass
+        self.layout_key = None
+        self.relayout()
 
     def add_wide(self, w, on_narrow=None):
         w.setMinimumWidth(10)
-        self.items.append(("wide", w, on_narrow))
+        self.items.append(("wide", w, on_narrow, self.sec))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -351,19 +387,23 @@ class ToolPanel(QWidget):
         while self.grid.count():
             self.grid.takeAt(0)
         row, col = 0, 0
-        for it in self.items:
-            if it[0] == "btn":
-                it[1].setFixedSize(bw, bh)
-                self.grid.addWidget(it[1], row, col)
+        for kind, w, on_narrow, sec in self.items:
+            if sec is not None and sec in self.collapsed:
+                w.hide()
+                continue
+            w.show()
+            if kind == "btn":
+                w.setFixedSize(bw, bh)
+                self.grid.addWidget(w, row, col)
                 col += 1
                 if col == cols:
                     row, col = row + 1, 0
                 continue
             if col:
                 row, col = row + 1, 0
-            if it[0] == "wide" and it[2]:
-                it[2](cols < 3)
-            self.grid.addWidget(it[1], row, 0, 1, cols)
+            if kind == "wide" and on_narrow:
+                on_narrow(cols < 3)
+            self.grid.addWidget(w, row, 0, 1, cols)
             row += 1
         for r in range(self.grid.rowCount() + 1):
             self.grid.setRowStretch(r, 0)
@@ -708,7 +748,7 @@ HELP_HTML = """
 </ul>
 <h3>입체도형 더 쓰기</h3>
 <ul>
-<li><b>점 잡기</b>: 선분·길이·각·점 도구로 입체의 꼭짓점이나 모서리 위를 클릭하면 그 점을 씁니다. 돌리거나 옮겨도 따라가고, 길이와 각은 실제(3D) 값으로 나옵니다. 모서리 위 점은 끌어서 모서리를 따라 옮깁니다(가운데에 자동으로 맞춤).</li>
+<li><b>점 잡기</b>: 선분·길이·각·점 도구로 입체의 꼭짓점, 모서리 위, 원 둘레, 면 위를 클릭하면 그 점을 씁니다. 원 둘레 점은 끌면 원을 따라 돌고, 면 위 점은 그 면 안에서 움직입니다. (Alt+클릭: 입체와 상관없는 점) 돌리거나 옮겨도 따라가고, 길이와 각은 실제(3D) 값으로 나옵니다. 모서리 위 점은 끌어서 모서리를 따라 옮깁니다(가운데에 자동으로 맞춤).</li>
 <li><b>원의 중심점</b>: 원기둥·원뿔·구 등은 속성 창 '원의 중심점 보이기'.</li>
 <li><b>면 색칠</b>: Alt+클릭 (앞쪽 면), Alt+Shift+클릭 (뒤쪽 면). 색과 진하기는 속성 창에서.</li>
 <li><b>자르기</b>: 속성 창 → '점 3개로 자르기'(꼭짓점·모서리 위 3곳 클릭) 또는 '방향으로 자르기'(기울기·방향·위치 슬라이더). 단면 모양 이름과 넓이가 나오고, 벌리기·한쪽 조각만 보기·단면 색을 바꿀 수 있습니다.</li>
@@ -726,6 +766,9 @@ HELP_HTML = """
 <li>오른쪽 클릭: 바로가기 메뉴 · 방향키: 조금씩 이동 (Shift: 크게)</li>
 <li><b>그룹</b>: 여러 개 선택 → Ctrl+G(그룹으로 묶기), Ctrl+Shift+G(그룹 풀기). 묶은 것은 한 번에 선택·이동·복사·삭제. 그룹 안의 하나만 고치려면 더블클릭.</li>
 <li>다각형의 변은 하나씩 클릭하면 그 변만 굵기·점선을 바꿀 수 있습니다.</li>
+<li>입체 위에 그린 다각형은 안쪽을 클릭하면 선택됩니다. <b>Alt+클릭</b>하면 면 색칠 색으로 그 다각형만 칠합니다.</li>
+<li>선분·직선·반직선을 그릴 때 <b>Shift</b>를 누르고 두 번째 점을 찍으면 수평·수직·30°·45°·60° 방향으로 맞춰집니다.</li>
+<li>왼쪽 도구 창의 <b>작도</b> 제목을 누르면 작도 버튼들이 접힙니다.</li>
 </ul>
 <h3>화면</h3>
 <ul><li>마우스 휠: 확대/축소 · 오른쪽 버튼(또는 가운데 버튼, Space+드래그)으로 끌기: 화면 이동</li>
@@ -737,7 +780,7 @@ HELP_HTML = """
 <li>1칸 모눈 = 1cm 이므로, 붙여넣은 그림 크기가 실제 길이와 거의 같습니다.</li>
 </ul>
 <h3>단축키 (기본값 · 설정 → 환경 설정 → 단축키 에서 바꿀 수 있음)</h3>
-<p>V 선택 · P 점 · S 선분 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
+<p>S 선택 · P 점 · V 선분 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
 Ctrl+Z 되돌리기 · Ctrl+Y 다시하기 · Ctrl+C/V 복사/붙여넣기 · Delete 삭제 · Ctrl+S 저장 · Esc 취소<br>
 Ctrl+G 그룹 · Ctrl+Shift+G 그룹 풀기 · F9 모눈 · Shift+F9 모눈에 맞추기 · F3 도구 창 · F4 속성 창</p>
 """
@@ -1021,7 +1064,7 @@ class MainWindow(QMainWindow):
         self.tool_group = QActionGroup(self)
         self.tool_actions = {}
         for t in TOOLS:
-            if t is None:
+            if t is None or t[0] == "#":
                 continue
             key, name, sc = t
             a = QAction(make_icon(key), name, self)
@@ -1032,6 +1075,19 @@ class MainWindow(QMainWindow):
             self.tool_actions[key] = a
             self.shortcut_defs.append(("tool_" + key, "도구", a, sc))
         custom = load_shortcuts()
+        try:
+            done = qsettings().value("sc_migr_sv", "") == "1"
+        except Exception:
+            done = True
+        if not done:                   # 1.8: 선택 S, 선분 V 로 바뀜
+            if custom.get("tool_select") == "V" and custom.get("tool_segment") == "S":
+                custom.pop("tool_select")
+                custom.pop("tool_segment")
+                save_shortcuts(custom)
+            try:
+                qsettings().setValue("sc_migr_sv", "1")
+            except Exception:
+                pass
         if "group" not in custom:      # 1.7: Ctrl+G 는 그룹 (모눈은 F9)
             for sid_, old in (("grid", "Ctrl+G"), ("snap", "Ctrl+Shift+G")):
                 if custom.get(sid_) == old:
@@ -1116,6 +1172,9 @@ class MainWindow(QMainWindow):
         for t in TOOLS:
             if t is None:
                 tp.add_sep()
+                continue
+            if t[0] == "#":
+                tp.add_header(t[1])
                 continue
             key = t[0]
             b = ToolButton(self.tool_actions[key])
@@ -1930,8 +1989,20 @@ class MainWindow(QMainWindow):
                                           "수학 수업과 학습지용 도형 그리기 프로그램입니다.")
 
 
+def app_base():
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def app_icon():
+    for name in ("icon/mdraw.ico", "icon/mdraw.png"):
+        f = os.path.join(app_base(), name)
+        if os.path.exists(f):
+            return QIcon(f)
+    return QIcon()
+
+
 def register_fonts():
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    base = app_base()
     folder = os.path.join(base, "fonts")
     if os.path.isdir(folder):
         for f in os.listdir(folder):
@@ -1943,6 +2014,13 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    if sys.platform == "win32":     # 작업 표시줄에 파이썬 아이콘 대신 이 프로그램 아이콘
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("mathkt.mdraw")
+        except Exception:
+            pass
+    app.setWindowIcon(app_icon())
     register_fonts()
     tr = QTranslator(app)
     if tr.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):

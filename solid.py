@@ -662,6 +662,82 @@ def edge_keys(m, curved):
     return out, rings
 
 
+def face_point(m, fi, a, b):
+    """면 위 점: 면의 첫 꼭짓점 v0 에서 (v1-v0)*a + (vk-v0)*b  (vk: 마지막 꼭짓점)"""
+    if not (0 <= fi < len(m.faces)):
+        return None
+    f = m.faces[fi]
+    v0, v1, vk = m.v[f[0]], m.v[f[1]], m.v[f[-1]]
+    return tuple(v0[k] + (v1[k] - v0[k]) * a + (vk[k] - v0[k]) * b for k in range(3))
+
+
+def face_coords(m, fi, X):
+    f = m.faces[fi]
+    v0, v1, vk = m.v[f[0]], m.v[f[1]], m.v[f[-1]]
+    e1 = [v1[k] - v0[k] for k in range(3)]
+    e2 = [vk[k] - v0[k] for k in range(3)]
+    w = [X[k] - v0[k] for k in range(3)]
+    d11 = sum(c * c for c in e1)
+    d22 = sum(c * c for c in e2)
+    d12 = sum(e1[k] * e2[k] for k in range(3))
+    r1 = sum(w[k] * e1[k] for k in range(3))
+    r2 = sum(w[k] * e2[k] for k in range(3))
+    den = d11 * d22 - d12 * d12
+    if abs(den) < 1e-12:
+        return 0.0, 0.0
+    return (r1 * d22 - r2 * d12) / den, (r2 * d11 - r1 * d12) / den
+
+
+def ring_point(m, r0, ang):
+    """원 둘레 위 점: 고리의 첫 점 r0 (각 0) 기준, 각 ang(라디안)"""
+    if not (0 <= r0 < len(m.v)):
+        return None
+    x0, y0, _ = m.v[r0]
+    R = abs(x0)
+    return (R * math.cos(ang), y0, R * math.sin(ang))
+
+
+def ring_of_edge(m, i, j):
+    """곡면 입체의 원 둘레 조각 (i, j) → 그 원의 첫 점 번호 (원이 아니면 None)"""
+    keys, rings = edge_keys(m, True)
+    k = keys.get(frozenset((i, j)))
+    if k is None or k not in rings:
+        return None
+    r0 = int(k[1:])
+    x0, y0, z0 = m.v[r0]
+    if abs(z0) > 1e-6 or x0 <= 1e-6:
+        return None
+    return r0
+
+
+def unproject(pr, sx, sy, n, d, shift=0.0):
+    """화면 위치(cm, 입체 기준) → 평면 n·X = d 위의 3D 점 (모델 좌표)"""
+    o = pr.screen(0.0, shift, 0.0)
+    cols = []
+    for e in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        q = pr.screen(e[0], e[1] + shift, e[2])
+        cols.append((q[0] - o[0], q[1] - o[1]))
+    A = [[cols[0][0], cols[1][0], cols[2][0]],
+         [cols[0][1], cols[1][1], cols[2][1]],
+         [n[0], n[1], n[2]]]
+    rhs = [sx - o[0], sy - o[1], d]
+
+    def det(M):
+        return (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1])
+                - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+                + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]))
+    D = det(A)
+    if abs(D) < 1e-12:
+        return None
+    out = []
+    for c in range(3):
+        M = [row[:] for row in A]
+        for r in range(3):
+            M[r][c] = rhs[r]
+        out.append(det(M) / D)
+    return tuple(out)
+
+
 def part_edge(part_mesh, i, j):
     """잘린 조각의 모서리 → 원래 입체의 모서리(frozenset) 또는 None(단면 선)"""
     src = getattr(part_mesh, "src", None)

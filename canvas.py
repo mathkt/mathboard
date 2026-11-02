@@ -11,10 +11,10 @@ from render import Geo, Renderer, length, norm, perp, dot, qpen, dir_deg
 
 TOOL_HINTS = {
     "select": "클릭: 선택 · 드래그: 이동 · Shift+클릭: 여러 개 선택 · 빈 곳 드래그: 영역 선택 · 더블클릭: 이름/글자 수정 · 휠: 확대/축소 · 오른쪽 드래그: 화면 이동",
-    "point": "클릭해서 점을 찍습니다. (Alt 누르고 클릭하면 모눈에 맞추지 않음)",
-    "segment": "두 점을 차례로 클릭하면 선분이 생깁니다.",
-    "line": "두 점을 차례로 클릭하면 직선이 생깁니다.",
-    "ray": "시작점, 지나는 점 순서로 클릭하면 반직선이 생깁니다.",
+    "point": "클릭해서 점을 찍습니다. 입체의 꼭짓점·모서리·원 둘레·면을 클릭하면 그 위의 점 (Alt: 모눈·입체 무시)",
+    "segment": "두 점을 차례로 클릭하면 선분이 생깁니다. Shift: 수평·수직·30°·45°·60° 방향으로",
+    "line": "두 점을 차례로 클릭하면 직선이 생깁니다. Shift: 수평·수직·30°·45°·60° 방향으로",
+    "ray": "시작점, 지나는 점 순서로 클릭하면 반직선이 생깁니다. Shift: 수평·수직·30°·45°·60° 방향으로",
     "polygon": "꼭짓점을 차례로 클릭하고, 첫 점을 다시 클릭하거나 더블클릭/Enter 로 완성합니다. Esc: 취소",
     "regpoly": "한 변의 두 끝점을 클릭하면 정다각형이 생깁니다. (변의 수는 왼쪽 도구모음에서)",
     "circle": "중심, 원 위의 한 점 순서로 클릭합니다.",
@@ -33,7 +33,7 @@ TOOL_HINTS = {
     "copyseg": "선분 옮기기: 옮길 선분(또는 두 점) → 새 시작점 → 방향을 차례로 클릭합니다.",
     "copyang": "각 옮기기: 옮길 각(각 표시 또는 끝 점→꼭짓점→끝 점) → 새 꼭짓점 → 한 변의 방향을 클릭합니다.",
     "compass": "컴퍼스: 고정점(바늘)을 클릭한 뒤, 끌어서 돌리면 돌린 만큼 호가 그려집니다. 너비는 왼쪽에서. Esc: 고정점 풀기",
-    "solid": "입체도형을 놓을 곳을 클릭하면 종류와 크기를 고르는 창이 뜹니다. (놓은 뒤 더블클릭: 회전 모드)",
+    "solid": "놓을 곳을 클릭합니다. (Shift+클릭: 계속 놓기 · 놓은 뒤 더블클릭: 회전 모드)",
     "measure": "길이·각·넓이를 잴 도형을 클릭하면 측정값이 화면에 표시됩니다.",
 }
 
@@ -318,14 +318,24 @@ class Canvas(QWidget):
                     return o["id"], "body"
         for o in objs:
             if o["type"] == "solid" and ok(o):
-                info = geo.solid(o)
-                if st.createStroke(info["vis"]).contains(wp) or (
-                        info["hull"] is not None and info["hull"].containsPoint(wp, Qt.OddEvenFill)):
+                if st.createStroke(geo.solid(o)["vis"]).contains(wp):
                     return o["id"], "body"
+        # 입체 위에 그린 다각형이 입체보다 먼저 잡히도록 (작은 것부터)
+        polys = []
         for o in objs:
             if o["type"] == "polygon" and ok(o):
                 ids = [i for i in o["pts"] if i in self.doc.objects]
-                if len(ids) >= 3 and QPolygonF([geo.P(i) for i in ids]).containsPoint(wp, Qt.OddEvenFill):
+                if len(ids) >= 3:
+                    pg = QPolygonF([geo.P(i) for i in ids])
+                    if pg.containsPoint(wp, Qt.OddEvenFill):
+                        br = pg.boundingRect()
+                        polys.append((br.width() * br.height(), o["id"]))
+        if polys:
+            return min(polys)[1], "body"
+        for o in objs:
+            if o["type"] == "solid" and ok(o):
+                info = geo.solid(o)
+                if info["hull"] is not None and info["hull"].containsPoint(wp, Qt.OddEvenFill):
                     return o["id"], "body"
         return None
 
@@ -421,6 +431,10 @@ class Canvas(QWidget):
         m = self.mouse
         hp = self.pick_point(m)
         cur = geo.P(hp) if hp else self.snap(m, self.alt_now())
+        qa = self.angle_snap(m)
+        if qa is not None:
+            cur = qa
+            hp = None
         p.setBrush(Qt.NoBrush)
         pen = QPen(QColor(40, 140, 255), 1.5 / self.scale, Qt.DashLine)
         p.setPen(pen)
@@ -509,6 +523,19 @@ class Canvas(QWidget):
             self.update()
             return
         if mods & Qt.AltModifier:
+            hp = self.hit(wp, kinds=("polygon",))
+            if hp and self.doc.objects[hp[0]]["type"] == "polygon":
+                o = self.doc.objects[hp[0]]
+                self.win.checkpoint()
+                same = o.get("alpha", 0) > 0 and o.get("fill") == self.win.face_color and int(o.get("alpha", 0)) == int(self.win.face_alpha)
+                if same:
+                    o["alpha"] = 0
+                else:
+                    o["fill"], o["alpha"] = self.win.face_color, int(self.win.face_alpha)
+                self.set_selection([o["id"]])
+                self.notify()
+                self.status.emit("다각형 색칠 (같은 색으로 다시 Alt+클릭하면 지워집니다)")
+                return
             h = self.hit(wp, kinds=("solid",))
             if h:
                 o = self.doc.objects[h[0]]
@@ -596,6 +623,11 @@ class Canvas(QWidget):
             d["single_point"] = (o["type"] == "point" and len(pts) == 1 and not pos)
             if o["type"] == "point" and o.get("edge") and len(sel) == 1:
                 d["mode"] = "slide"
+            if o["type"] == "point" and o.get("solid") is not None and len(sel) == 1:
+                if o.get("face") is not None:
+                    d["mode"] = "slideface"
+                elif o.get("ring") is not None:
+                    d["mode"] = "slidering"
         elif part.startswith("slabel"):
             k = int(part[6:])
             geo = Geo(doc)
@@ -667,6 +699,35 @@ class Canvas(QWidget):
             u = geo.on_param(o["dep"]["obj"], wp)
             if u is not None:
                 o["dep"]["u"] = u
+            return
+        if mode == "slidering":
+            so = doc.objects.get(o.get("solid"))
+            if so:
+                o["ang"] = round(self.ring_angle_at(so, int(o["ring"]), wp), 5)
+            return
+        if mode == "slideface":
+            so = doc.objects.get(o.get("solid"))
+            if not so:
+                return
+            info = geo.solid(so)
+            m = info["a"]["mesh"]
+            cur = int(o["face"])
+            g0 = m.groups[cur] if cur < len(m.groups) else None
+            fis = info.get("face_fi") or []
+            cur_front = next((fr_ for k, (_g, fr_, _p) in enumerate(info["faces"]) if k < len(fis) and fis[k] == cur), True)
+            target = None
+            for k, (g, front, poly) in enumerate(info["faces"]):
+                if k >= len(fis) or fis[k] is None or g != g0 or front != cur_front:
+                    continue
+                if poly.containsPoint(wp, Qt.OddEvenFill):
+                    target = fis[k]
+                    break
+            if target is None:
+                return
+            X = self.unproject_face(so, target, wp, info)
+            if X is not None:
+                a, b = S.face_coords(m, target, X)
+                o["face"], o["fa"], o["fb"] = target, round(a, 5), round(b, 5)
             return
         if mode == "slide":
             so = doc.objects.get(o.get("solid"))
@@ -883,6 +944,11 @@ class Canvas(QWidget):
             return M.make_attached_point(self.doc, best[1], sv=best[2])
         if not edges:
             return None
+        rg = self.ring_at(wp, only_sid)
+        if rg:
+            o, r0 = rg
+            self.win.checkpoint()
+            return M.make_attached_point(self.doc, o["id"], ring=r0, ang=self.ring_angle_at(o, r0, wp))
         se = self.solid_edge_at(wp, only_sid)
         if se:
             sid, i, j = se
@@ -897,10 +963,124 @@ class Canvas(QWidget):
             return M.make_attached_point(self.doc, sid, edge=(i, j), t=t)
         return None
 
+    def angle_snap(self, wp):
+        """Shift: 첫 점에서 수평·수직·30°·45°·60° 방향으로 맞춘 위치 (선분·직선·반직선)"""
+        if self.tool not in ("segment", "line", "ray") or not self.temp:
+            return None
+        from PySide6.QtWidgets import QApplication
+        if not (QApplication.keyboardModifiers() & Qt.ShiftModifier):
+            return None
+        a = self.doc.objects.get(self.temp[0])
+        if not a:
+            return None
+        A = QPointF(a["x"], a["y"])
+        v = wp - A
+        L = length(v)
+        if L < 1e-6:
+            return None
+        ang = math.degrees(math.atan2(-v.y(), v.x()))
+        cands = [k * 15 for k in range(-12, 13) if (k * 15) % 30 == 0 or (k * 15) % 45 == 0]
+        best = min(cands, key=lambda c: abs((ang - c + 180) % 360 - 180))
+        t = math.radians(best)
+        u = QPointF(math.cos(t), -math.sin(t))
+        Lp = dot(v, u)
+        if self.doc.settings.get("snap") and not self.alt_now():
+            # 모눈에 맞출 때는 길이를 0.5cm 단위로
+            h = M.GRID / 2
+            Lp = round(Lp / h) * h
+        return A + u * Lp
+
+    def face_at(self, wp):
+        """화면 위치의 입체 앞쪽 면 → (입체, 면 번호, 3D 점)"""
+        geo = Geo(self.doc)
+        for o in reversed(self.visible()):
+            if o["type"] != "solid" or o.get("cut"):
+                continue
+            info = geo.solid(o)
+            fis = info.get("face_fi") or []
+            for k, (g, front, poly) in enumerate(info["faces"]):
+                if not front or k >= len(fis) or fis[k] is None:
+                    continue
+                if poly.containsPoint(wp, Qt.OddEvenFill):
+                    X = self.unproject_face(o, fis[k], wp, info)
+                    if X is not None:
+                        return o, fis[k], X
+        return None
+
+    def unproject_face(self, o, fi, wp, info=None):
+        info = info or Geo(self.doc).solid(o)
+        a = info["a"]
+        m = a["mesh"]
+        f = m.faces[fi]
+        n = S.newell(m, f)
+        L = math.sqrt(sum(c * c for c in n)) or 1.0
+        n = tuple(c / L for c in n)
+        v0 = m.v[f[0]]
+        d = sum(n[k] * v0[k] for k in range(3))
+        fr = S.frame_of(o, self.doc.objects)
+        return S.unproject(a["proj"], (wp.x() - fr["x"]) / M.GRID, (wp.y() - fr["y"]) / M.GRID, n, d, a["shift"])
+
+    def ring_at(self, wp, only_sid=None):
+        """곡면 입체(원기둥·원뿔 등)의 원 둘레 근처 → (입체, 원 번호)"""
+        geo = Geo(self.doc)
+        best = None
+        for o in self.visible():
+            if o["type"] != "solid" or (only_sid is not None and o["id"] != only_sid):
+                continue
+            if not S.is_curved(o) or o.get("cut") or S.build(o["kind"], o["params"]).sphere_r is not None:
+                continue
+            info = geo.solid(o)
+            for k, A, B, v in info.get("edge_hits", []):
+                if not k.startswith("r"):
+                    continue
+                if not v and not o.get("show_hidden", True):
+                    continue
+                dd = dist_to_seg(wp, A, B)
+                if dd < self.tol() + 2 and (best is None or dd < best[0]):
+                    best = (dd, o, int(k[1:].split(":")[0]))
+        if not best:
+            return None
+        m = geo.solid(best[1])["a"]["mesh"]
+        x0, _y0, z0 = m.v[best[2]]
+        if abs(z0) > 1e-6 or x0 <= 1e-6:
+            return None
+        return best[1], best[2]
+
+    def ring_angle_at(self, so, r0, wp):
+        geo = Geo(self.doc)
+        m = geo.solid(so)["a"]["mesh"]
+        best, ba = None, 0.0
+        for k in range(360):
+            t = math.radians(k)
+            X = S.ring_point(m, r0, t)
+            if X is None:
+                return 0.0
+            dd = length(geo.solid_screen(so, X) - wp)
+            if best is None or dd < best:
+                best, ba = dd, t
+        return ba
+
+    def make_face_point(self, wp):
+        fa_ = self.face_at(wp)
+        if not fa_:
+            return None
+        o, fi, X = fa_
+        m = Geo(self.doc).solid(o)["a"]["mesh"]
+        a, b = S.face_coords(m, fi, X)
+        self.win.checkpoint()
+        return M.make_attached_point(self.doc, o["id"], face=fi, fa=a, fb=b)
+
     def get_or_make(self, wp, alt):
+        q = self.angle_snap(wp)
+        if q is not None:
+            self.win.checkpoint()
+            return M.make_point(self.doc, q.x(), q.y()), True
         pid = self.snap_point(wp)
         if pid:
             return pid, False
+        pid = self.make_face_point(wp) if not alt else None
+        if pid:
+            return pid, True
         self.win.checkpoint()
         q = self.snap(wp, alt)
         return M.make_point(self.doc, q.x(), q.y()), True
@@ -916,6 +1096,8 @@ class Canvas(QWidget):
             pid = self.snap_point(wp)
             if not pid:
                 pid = self.point_on_objects(wp)
+            if not pid and not alt:
+                pid = self.make_face_point(wp)
             if pid:
                 self.set_selection([pid])
                 self.notify()
@@ -1644,7 +1826,8 @@ class Canvas(QWidget):
     def done_shape(self):
         """도형 하나를 다 그리면 선택 도구로 (Shift 를 누르고 있으면 도구 유지)"""
         from PySide6.QtWidgets import QApplication
-        if QApplication.keyboardModifiers() & Qt.ShiftModifier or self.tool == "compass":
+        if self.tool == "compass" or (QApplication.keyboardModifiers() & Qt.ShiftModifier
+                                       and self.tool not in ("segment", "line", "ray")):
             return
         QTimer.singleShot(0, lambda: self.win.choose_tool("select"))
 
@@ -1665,6 +1848,8 @@ class Canvas(QWidget):
     # ------------------------------------------------------------ 키보드
     def keyPressEvent(self, e):
         k = e.key()
+        if k == Qt.Key_Shift:
+            self.update()
         if k == Qt.Key_Space and not e.isAutoRepeat():
             self.space_down = True
             self.setCursor(Qt.OpenHandCursor)

@@ -788,8 +788,9 @@ class PropertyPanel(QScrollArea):
 
         def sp(val, lo, cb):
             b = self.spin(float(val), lo, 30, 0.5, cb)
-            b.setMaximumWidth(58)
-            b.setMinimumWidth(46)
+            b.setMinimumWidth(68)
+            b.setMaximumWidth(84)
+            b.setKeyboardTracking(False)     # 숫자를 다 쓰고 Enter·다른 칸으로 옮길 때 반영
             return b
         for idx in range(len(layers) - 1, -1, -1):
             L = layers[idx]
