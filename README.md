@@ -8,13 +8,16 @@ GSP·지오지브라처럼 점을 움직이면 도형이 함께 바뀌고, 교�
 - 현재 버전: **1.9**
 - 실행 환경: Windows (Python + PySide6)
 
-## 받기 (exe 하나)
+## 받기
 
-**[mdraw.exe 받기 (최신 버전)](https://github.com/mathkt/mathboard/releases/latest/download/mdraw.exe)** — 받아서 바로 실행합니다. 설치나 파이썬이 필요 없습니다.
+| 파일 | 설명 |
+|---|---|
+| **[mdraw-setup.exe (설치 파일)](https://github.com/mathkt/mathboard/releases/latest/download/mdraw-setup.exe)** | 실행하면 설치되고 바탕화면·시작 메뉴에 바로가기가 생깁니다. 관리자 권한이 없어도 설치됩니다. 빨리 켜집니다. |
+| [mdraw.exe (설치 없이 실행)](https://github.com/mathkt/mathboard/releases/latest/download/mdraw.exe) | 파일 하나만 받아 바로 실행합니다. USB에 넣어 다닐 때 좋습니다. |
 
-- 지난 버전과 바뀐 점: [Releases](https://github.com/mathkt/mathboard/releases)
 - 처음 실행할 때 Windows가 'PC 보호' 경고를 띄우면 **추가 정보 → 실행**을 누르세요. (서명하지 않은 프로그램이라 나오는 안내입니다)
-- 새 버전이 나오면 새 exe로 바꾸기만 하면 됩니다. 그린 파일(.dhg)은 그대로 열립니다.
+- 새 버전은 새 설치 파일을 그대로 실행하면 덮어서 설치됩니다. 그린 파일(.dhg)은 그대로 열립니다.
+- 지난 버전과 바뀐 점: [Releases](https://github.com/mathkt/mathboard/releases)
 
 ## 직접 만들어 실행하기 (코드를 고칠 때)
 
@@ -67,6 +70,7 @@ GSP·지오지브라처럼 점을 움직이면 도형이 함께 바뀌고, 교�
 | `panel.py` | 오른쪽 속성 창 |
 | `model.py` | 데이터, 저장 형식(.dhg), 길이·각·넓이 계산 |
 | `solid.py` | 입체도형 (모양, 숨은 선, 자르기, 쌓기, 전개도, 겉넓이·부피) |
+| `installer/` | 설치 파일 설정(Inno Setup)과 설치 화면 그림 |
 | `.github/workflows/build-exe.yml` | Releases에서 새 버전을 발행하면 GitHub가 exe를 만들어 붙임 |
 | `icon/` | 프로그램 아이콘 (mdraw.ico, mdraw.png) |
 | `fonts/` | CMU Serif, KaTeX 수식체 글꼴 (exe 안에 함께 들어감) |
