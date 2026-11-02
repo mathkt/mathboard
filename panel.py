@@ -167,7 +167,7 @@ class PropertyPanel(QScrollArea):
         s.setValue(value)
         if suffix:
             s.setSuffix(suffix)
-        s.setMaximumWidth(78)
+        s.setMaximumWidth(96)
         s.valueChanged.connect(on_change)
         return s
 
@@ -787,9 +787,11 @@ class PropertyPanel(QScrollArea):
             later()
 
         def sp(val, lo, cb):
-            b = self.spin(float(val), lo, 30, 0.5, cb)
-            b.setMinimumWidth(68)
-            b.setMaximumWidth(84)
+            b = self.spin(float(val), lo, 30, 0.5, cb, suffix=" cm")
+            b.setMinimumWidth(110)
+            b.setMaximumWidth(16777215)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setMinimumHeight(24)
             b.setKeyboardTracking(False)     # 숫자를 다 쓰고 Enter·다른 칸으로 옮길 때 반영
             return b
         for idx in range(len(layers) - 1, -1, -1):
@@ -839,30 +841,33 @@ class PropertyPanel(QScrollArea):
             xb.clicked.connect(lambda _=False, idx=idx: (setp(lambda pp: pp["layers"].pop(idx)), later()))
             hh.addWidget(xb)
             vb.addWidget(head)
+            H = lambda v, idx=idx: setl("h", v, idx)
+            R = lambda key, idx=idx: (lambda v: setl(key, v, idx))
             if kd == "cyl":
-                row = self.hrow(rname, sp(L.get("r1", 1), 0.1, setboth), "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+                fields = [("반지름", L.get("r1", 1), setboth), ("높이", L.get("h", 1), H)]
             elif kd == "cone":
-                row = self.hrow(rname, sp(L.get("r1", 1), 0.1, lambda v, idx=idx: setl("r1", v, idx)),
-                                "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+                fields = [("반지름", L.get("r1", 1), R("r1")), ("높이", L.get("h", 1), H)]
             elif kd == "rcone":
-                row = self.hrow(rname, sp(L.get("r2", 1), 0.1, lambda v, idx=idx: setl("r2", v, idx)),
-                                "높이", sp(L.get("h", 1), 0.1, lambda v, idx=idx: setl("h", v, idx)))
+                fields = [("반지름", L.get("r2", 1), R("r2")), ("높이", L.get("h", 1), H)]
             elif kd == "frus":
-                row = QWidget()
-                g2 = QGridLayout(row)
-                g2.setContentsMargins(0, 0, 0, 0)
-                g2.setHorizontalSpacing(4)
-                g2.setVerticalSpacing(2)
-                for c_, (key, nm) in enumerate((("r1", "아래"), ("r2", "위"), ("h", "높이"))):
-                    lb = QLabel(nm)
-                    lb.setStyleSheet("color:#444")
-                    g2.addWidget(lb, 0 if c_ < 2 else 1, (c_ % 2) * 2)
-                    g2.addWidget(sp(L.get(key, 1), 0.1, lambda v, key=key, idx=idx: setl(key, v, idx)),
-                                 0 if c_ < 2 else 1, (c_ % 2) * 2 + 1)
-                g2.setColumnStretch(4, 1)
+                fields = [("아랫면 반지름", L.get("r1", 1), R("r1")), ("윗면 반지름", L.get("r2", 1), R("r2")),
+                          ("높이", L.get("h", 1), H)]
             else:
                 key = "r1" if kd == "dome" else "r2"
-                row = self.hrow("반지름", sp(L.get(key, 1), 0.1, lambda v, key=key, idx=idx: setl(key, v, idx)))
+                fields = [("반지름", L.get(key, 1), R(key))]
+            row = QWidget()
+            fl = QFormLayout(row)
+            fl.setContentsMargins(8, 0, 0, 0)
+            fl.setHorizontalSpacing(6)
+            fl.setVerticalSpacing(3)
+            fl.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            for nm, val, cb in fields:
+                lb = QLabel(nm)
+                lb.setStyleSheet("color:#444")
+                lb.setMinimumWidth(80)
+                lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                fl.addRow(lb, sp(val, 0.1, cb))
             vb.addWidget(row)
             if idx:
                 line = QWidget()
