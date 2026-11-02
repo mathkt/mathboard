@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 
 TOOLS = [
     ("select", "선택", "S"),
@@ -375,9 +375,17 @@ class ToolPanel(QWidget):
     def sizeHint(self):
         return QSize(200, 600)
 
+    def avail_width(self):
+        """스크롤 막대가 생기든 말든 같은 폭으로 계산 (막대가 생겼다 없어졌다 하며 깜빡이지 않게)"""
+        sa = getattr(self, "scroll", None)
+        if sa is None:
+            return self.width() - 6
+        sb = sa.verticalScrollBar().sizeHint().width()
+        return sa.width() - 2 * sa.frameWidth() - sb - 6
+
     def relayout(self):
-        avail = max(30, self.width() - 6)
-        cols = max(1, min(6, (avail + 3) // 63))
+        avail = max(30, self.avail_width())
+        cols = max(1, min(6, (avail + 3) // 61))
         bw = max(30, min(72, (avail - 3 * (cols - 1)) // cols))
         bh = 52 if bw >= 54 else 42
         key = (cols, bw)
@@ -738,7 +746,7 @@ HELP_HTML = """
 </ul>
 <h3>입체도형</h3>
 <ul>
-<li><b>입체도형(K)</b>을 누르면 바로 창이 떠서 종류(정육면체·직육면체·각기둥·각뿔·각뿔대·원기둥·원뿔·원뿔대·구·쌓기), 크기(cm), 놓는 방향을 고릅니다. 확인 → 마우스를 따라 겨냥도가 보이고, 클릭한 곳에 놓입니다. (Shift+클릭: 같은 도형을 계속 놓기)</li>
+<li><b>입체도형(K)</b>을 누르면 바로 창이 떠서 종류(정육면체·직육면체·각기둥·각뿔·각뿔대·원기둥·원뿔·원뿔대·구·반구·쌓기), 크기(cm), 놓는 방향을 고릅니다. 확인 → 마우스를 따라 겨냥도가 보이고, 클릭한 곳에 놓입니다. (Shift+클릭: 같은 도형을 계속 놓기)</li>
 <li><b>놓는 방향(눕히기)</b>: 속성 창 '놓는 방향'에서 세우기·거꾸로·밑면 →·← 밑면·밑면 앞·밑면 뒤, 슬라이더로 원하는 만큼 기울이기.</li>
 <li>보이지 않는 모서리는 자동으로 점선이 됩니다. 처음엔 교과서식 <b>겨냥도</b>로 그립니다.</li>
 <li><b>더블클릭 → 회전 모드</b>: 끌어서 돌립니다. Esc 또는 빈 곳 클릭으로 끝. 속성 창의 버튼(겨냥도·비스듬히·앞·위·옆·아래)과 슬라이더로도 돌립니다.</li>
@@ -850,6 +858,8 @@ class MainWindow(QMainWindow):
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setFrameShape(QFrame.NoFrame)
         sa.setWidget(self.tool_panel)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tool_panel.scroll = sa
         tdock = QDockWidget("도구", self)
         tdock.setObjectName("tools_dock")
         tdock.setWidget(sa)

@@ -193,7 +193,8 @@ class PropertyPanel(QScrollArea):
         return b
 
     def ncols(self):
-        w = self.viewport().width()
+        # 스크롤 막대 유무와 상관없는 폭 (막대가 생겼다 없어졌다 하며 다시 그리기를 되풀이하지 않게)
+        w = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width()
         return 3 if w >= 250 else (2 if w >= 165 else 1)
 
     def resizeEvent(self, e):

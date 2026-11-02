@@ -15,10 +15,11 @@ KINDS = [
     ("cone", "원뿔"),
     ("cone_frustum", "원뿔대"),
     ("sphere", "구"),
+    ("hemisphere", "반구"),
     ("stack", "쌓기(회전체)"),
 ]
 KIND_NAMES = dict(KINDS)
-CURVED = {"cylinder", "cone", "cone_frustum", "sphere"}
+CURVED = {"cylinder", "cone", "cone_frustum", "sphere", "hemisphere"}
 
 # (키, 이름, 기본값, 최소, 최대, 정수?)
 PARAMS = {
@@ -36,6 +37,7 @@ PARAMS = {
     "cone_frustum": [("r1", "아랫면 반지름", 2.5, 0.3, 20, False), ("r2", "윗면 반지름", 1.2, 0.1, 20, False),
                      ("h", "높이", 3.0, 0.5, 30, False)],
     "sphere": [("r", "반지름", 2.5, 0.3, 20, False)],
+    "hemisphere": [("r", "반지름", 2.5, 0.3, 20, False)],
     "stack": [],
 }
 
@@ -229,10 +231,15 @@ def build(kind, p, sphere_mesh=False):
         m.centers = [0]
     elif kind == "stack":
         build_stack(m, p)
+    elif kind == "hemisphere":
+        build_stack(m, {"layers": [{"shape": "dome", "r1": float(p["r"]), "r2": 0.0, "h": float(p["r"])}], "n": 0}, fine=36)
+        m.named = m.named[:1]
+        m.names = ["O"]
+        m.centers = [0]
     return m
 
 
-def stack_profile(p):
+def stack_profile(p, fine=None):
     """[(y, 반지름, 이음매인지)] 아래부터, 높이 가운데가 0"""
     pts = []
     y = 0.0
@@ -245,7 +252,7 @@ def stack_profile(p):
             r = max(0.05, float(L.get("r1", 1) if shape == "dome" else L.get("r2", 1)))
             h = r
             seg = []
-            N = 12
+            N = fine or 24
             for i in range(N + 1):
                 t = math.pi / 2 * i / N
                 if shape == "dome":
@@ -260,8 +267,8 @@ def stack_profile(p):
     return [(yy - y / 2, r, j) for yy, r, j in pts], y
 
 
-def build_stack(m, p):
-    prof, H = stack_profile(p)
+def build_stack(m, p, fine=None):
+    prof, H = stack_profile(p, fine)
     n = int(p.get("n", 0))
     curved = n == 0
     N = SEG if curved else n
@@ -1108,6 +1115,9 @@ def metrics(kind, p):
         r1, r2, h = g("r1"), g("r2"), g("h")
         l = math.hypot(h, r1 - r2)
         sk, vk = r1 * r1 + r2 * r2 + (r1 + r2) * l, h / 3 * (r1 * r1 + r1 * r2 + r2 * r2)
+    elif kind == "hemisphere":
+        r = g("r")
+        sk, vk = 3 * r * r, 2 * r ** 3 / 3
     else:  # sphere
         r = g("r")
         sk, vk = 4 * r * r, 4 * r ** 3 / 3
@@ -1124,7 +1134,7 @@ NET_LAYOUTS = [("flower", "밑면 둘레에 펼치기"), ("strip", "옆면을 �
 
 
 def net_supported(o):
-    if o["kind"] == "sphere":
+    if o["kind"] in ("sphere", "hemisphere"):
         return False
     if o["kind"] == "stack":
         return False
