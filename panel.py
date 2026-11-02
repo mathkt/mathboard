@@ -376,7 +376,18 @@ class PropertyPanel(QScrollArea):
                 self.apply(tg, "skind", f)
                 self.drop_solid_braces(tg)
                 QTimer.singleShot(0, self.rebuild)
-            form.addRow("종류", self.combo(S.KINDS, o["kind"], set_kind))
+            kc = QComboBox()
+            for gi, (title, keys) in enumerate(S.KIND_GROUPS):
+                if gi:
+                    kc.insertSeparator(kc.count())
+                for k in keys:
+                    if kc.findData(k) < 0:
+                        kc.addItem(S.KIND_NAMES[k], k)
+            kc.setCurrentIndex(max(0, kc.findData(o["kind"])))
+            kc.setMaximumWidth(170)
+            kc.setMaxVisibleItems(25)
+            kc.currentIndexChanged.connect(lambda _i: set_kind(kc.currentData()))
+            form.addRow("종류", kc)
             for key, name, _d, lo, hi, is_int in S.PARAMS[o["kind"]]:
                 def ch(v, key=key, is_int=is_int):
                     def f(ob):

@@ -351,7 +351,7 @@ def solid_dict(doc, kind, x, y, params=None, tz=0.0, tx=0.0):
         "view": "oblique", "yaw": 0.0 if curved else -30.0, "pitch": 20.0,
         "style": new_style(doc), "hid_style": new_style(doc, width=lw, dash="dash"),
         "show_hidden": True, "fill": "#4a90e2", "alpha": 0,
-        "labels": list(mesh.names), "show_labels": not curved, "show_dots": False,
+        "labels": list(mesh.names), "show_labels": not curved and len(mesh.names) <= 12, "show_dots": False,
         "lab_off": {}, "font": copy.deepcopy(doc.settings["font"]), "text_color": "#000000",
         "tz": float(tz), "tx": float(tx),
     })

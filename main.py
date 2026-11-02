@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                                QKeySequenceEdit, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
                                QSpinBox, QStyle, QListWidget, QTabBar, QMenu, QSizePolicy, QStyleOptionToolButton, QStylePainter, QTabWidget,
                                QTableWidget, QTableWidgetItem, QTextBrowser, QToolBar, QToolButton,
-                               QVBoxLayout, QWidget, QScrollArea)
+                               QVBoxLayout, QWidget, QScrollArea, QListWidgetItem)
 
 import model as M
 import solid as S
@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.10"
 
 TOOLS = [
     ("select", "선택", "S"),
@@ -444,11 +444,34 @@ class SolidDialog(QDialog):
         self.setWindowTitle("입체도형 만들기")
         lay = QHBoxLayout(self)
         self.list = QListWidget()
-        for k, name in S.KINDS:
-            self.list.addItem(name)
-        self.list.setFixedWidth(140)
+        self.rows = {}
+        for title, keys in S.KIND_GROUPS:
+            head = QListWidgetItem(title)
+            head.setFlags(Qt.NoItemFlags)
+            hf = head.font()
+            hf.setBold(True)
+            head.setFont(hf)
+            head.setForeground(QColor("#2f5d9e"))
+            head.setBackground(QColor("#eef2f7"))
+            self.list.addItem(head)
+            for k in keys:
+                it = QListWidgetItem("   " + S.KIND_NAMES[k])
+                it.setData(Qt.UserRole, k)
+                self.list.addItem(it)
+                self.rows.setdefault(k, self.list.count() - 1)
+        self.list.setFixedWidth(250)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self.list)
         right = QVBoxLayout()
+        self.preview = QLabel()
+        self.preview.setFixedSize(260, 200)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("background:white; border:1px solid #d5dbe3; border-radius:4px;")
+        right.addWidget(self.preview)
+        self.counts = QLabel()
+        self.counts.setWordWrap(True)
+        self.counts.setStyleSheet("color:#345")
+        right.addWidget(self.counts)
         self.form_box = QWidget()
         self.form = QFormLayout(self.form_box)
         right.addWidget(QLabel("크기 (cm)"))
@@ -461,6 +484,7 @@ class SolidDialog(QDialog):
         self.orient.setCurrentIndex(max(0, self.orient.findData(SolidDialog.last_orient)))
         orow.addWidget(self.orient, 1)
         right.addLayout(orow)
+        self.orient.currentIndexChanged.connect(lambda _i: self.update_preview())
         tip = QLabel("확인을 누른 뒤 놓을 곳을 클릭하세요.")
         tip.setStyleSheet("color:#666")
         right.addWidget(tip)
@@ -472,10 +496,9 @@ class SolidDialog(QDialog):
         lay.addLayout(right)
         self.spins = {}
         self.list.currentRowChanged.connect(self.fill)
-        self.list.itemDoubleClicked.connect(lambda _i: self.accept())
-        keys = [k for k, _ in S.KINDS]
-        self.list.setCurrentRow(keys.index(SolidDialog.last_kind))
-        self.resize(420, 320)
+        self.list.itemDoubleClicked.connect(lambda it: self.accept() if it.data(Qt.UserRole) else None)
+        self.list.setCurrentRow(self.rows.get(SolidDialog.last_kind, 1))
+        self.resize(560, 480)
 
     def orient_angles(self):
         SolidDialog.last_orient = self.orient.currentData()
@@ -485,7 +508,54 @@ class SolidDialog(QDialog):
         return 0.0, 0.0
 
     def kind(self):
-        return S.KINDS[self.list.currentRow()][0]
+        it = self.list.currentItem()
+        return (it.data(Qt.UserRole) if it else None) or "cuboid"
+
+    def update_preview(self):
+        """고른 입체의 작은 그림과 면·모서리·꼭짓점 개수"""
+        try:
+            kind, params = self.values(remember=False)
+        except Exception:
+            return
+        doc = M.Document()
+        tz, tx = 0.0, 0.0
+        for k, _n, a, b in S.ORIENTS:
+            if k == self.orient.currentData():
+                tz, tx = a, b
+        so = M.solid_dict(doc, kind, 0, 0, params, tz, tx)
+        so["id"] = -1
+        so["show_labels"] = False
+        geo = Geo(doc)
+        info = geo.solid(so)
+        br = info["hull"].boundingRect() if info["hull"] is not None else QRectF(-50, -50, 100, 100)
+        W, H = self.preview.width(), self.preview.height()
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(W * dpr), int(H * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(QColor("white"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        sc = min((W - 24) / max(br.width(), 1), (H - 24) / max(br.height(), 1))
+        p.translate(W / 2, H / 2)
+        p.scale(sc, sc)
+        p.translate(-br.center())
+        so["style"] = dict(so["style"], width=1.6 / sc)
+        so["hid_style"] = dict(so["hid_style"], width=1.4 / sc)
+        Renderer(doc, Geo(doc), []).draw_solid(p, so)
+        p.end()
+        self.preview.setPixmap(pm)
+        m = S.build(kind, params)
+        if m.sphere_r is not None or S.is_curved(so):
+            self.counts.setText("곡면이 있는 입체" if m.sphere_r is None else "구")
+            return
+        E = len({frozenset((f[k], f[(k + 1) % len(f)])) for f in m.faces for k in range(len(f))})
+        shapes = {}
+        for f in m.faces:
+            shapes[len(f)] = shapes.get(len(f), 0) + 1
+        nm = {3: "삼각형", 4: "사각형", 5: "오각형", 6: "육각형", 8: "팔각형", 10: "십각형"}
+        sh = " · ".join(f"{nm.get(n, f'{n}각형')} {c}" for n, c in sorted(shapes.items()))
+        self.counts.setText(f"<b>면 {len(m.faces)} · 모서리 {E} · 꼭짓점 {len(m.v)}</b><br>"
+                            f"<span style='color:#667'>면: {sh}</span>")
 
     def fill(self, _row):
         while self.form.rowCount():
@@ -505,6 +575,9 @@ class SolidDialog(QDialog):
             tip.setWordWrap(True)
             tip.setStyleSheet("color:#666")
             self.form.addRow(tip)
+            self.preset.currentIndexChanged.connect(lambda _i: self.update_preview())
+            self.base.currentIndexChanged.connect(lambda _i: self.update_preview())
+            self.update_preview()
             return
         for key, name, d, lo, hi, is_int in S.PARAMS[self.kind()]:
             s = QSpinBox() if is_int else QDoubleSpinBox()
@@ -515,9 +588,12 @@ class SolidDialog(QDialog):
             s.setValue(d)
             self.form.addRow(name, s)
             self.spins[key] = (s, is_int)
+            s.valueChanged.connect(lambda _v: self.update_preview())
+        self.update_preview()
 
-    def values(self):
-        SolidDialog.last_kind = self.kind()
+    def values(self, remember=True):
+        if remember:
+            SolidDialog.last_kind = self.kind()
         if self.kind() == "stack":
             layers = [dict(l) for l in S.STACK_PRESETS[self.preset.currentText()]]
             if self.preset.currentText().startswith("직접"):
@@ -775,6 +851,7 @@ HELP_HTML = """
 <ul>
 <li><b>입체도형(K)</b>을 누르면 바로 창이 떠서 종류(정육면체·직육면체·각기둥·각뿔·각뿔대·원기둥·원뿔·원뿔대·구·반구·쌓기), 크기(cm), 놓는 방향을 고릅니다. 확인 → 마우스를 따라 겨냥도가 보이고, 클릭한 곳에 놓입니다. (Shift+클릭: 같은 도형을 계속 놓기)</li>
 <li><b>놓는 방향(눕히기)</b>: 속성 창 '놓는 방향'에서 세우기·거꾸로·밑면 →·← 밑면·밑면 앞·밑면 뒤, 슬라이더로 원하는 만큼 기울이기.</li>
+<li><b>다면체</b>: 입체도형 만들기 창에 정다면체 5가지, 아르키메데스 다면체 13가지, 카탈랑 다면체 13가지가 묶음별로 있습니다. 그림과 면·모서리·꼭짓점 개수가 함께 나오고, 모두 전개도를 만들 수 있습니다.</li>
 <li>보이지 않는 모서리는 자동으로 점선이 됩니다. 처음엔 교과서식 <b>겨냥도</b>로 그립니다.</li>
 <li><b>더블클릭 → 회전 모드</b>: 끌어서 돌립니다. Esc 또는 빈 곳 클릭으로 끝. 속성 창의 버튼(겨냥도·비스듬히·앞·위·옆·아래)과 슬라이더로도 돌립니다.</li>
 <li>평소에 끌면 위치가 옮겨집니다. 꼭짓점 이름은 더블클릭해서 바꾸고 끌어서 옮깁니다.</li>
@@ -1505,11 +1582,13 @@ class MainWindow(QMainWindow):
     def add_net(self, sid):
         so = self.doc.objects[sid]
         if not S.net_supported(so):
-            QMessageBox.information(self, APP_NAME, "구와 쌓기(회전체)는 전개도를 만들 수 없습니다.")
+            QMessageBox.information(self, APP_NAME, "구·반구·쌓기(회전체)와 옆면이 휜 입체는 전개도를 만들 수 없습니다.")
             return
         hull = Geo(self.doc).solid(so)["hull"].boundingRect()
         self.checkpoint()
         nid = M.make_net(self.doc, sid, hull.right() + 40, hull.center().y())
+        if not so.get("show_labels", True):      # 꼭짓점이 많은 다면체는 전개도에도 이름을 처음엔 숨김
+            self.doc.objects[nid]["show_labels"] = False
         br = Geo(self.doc).net(self.doc.objects[nid])["hull"].boundingRect()
         self.doc.objects[nid]["x"] += br.width() / 2
         self.canvas.set_selection([nid])

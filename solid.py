@@ -5,6 +5,8 @@
 """
 import math
 
+import polydata as PD
+
 KINDS = [
     ("cube", "정육면체"),
     ("cuboid", "직육면체"),
@@ -17,8 +19,25 @@ KINDS = [
     ("sphere", "구"),
     ("hemisphere", "반구"),
     ("stack", "쌓기(회전체)"),
-]
+] + [(k, PD.POLY[k]["name"]) for k in PD.ORDER]
 KIND_NAMES = dict(KINDS)
+# 입체도형 만들기 창의 묶음: (제목, [종류])
+KIND_GROUPS = [
+    ("기본 입체", ["cube", "cuboid", "prism", "pyramid", "frustum", "cylinder", "cone", "cone_frustum",
+                 "sphere", "hemisphere", "stack"]),
+    ("정다면체", ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron"]),
+    ("아르키메데스 다면체", [k for k in PD.ORDER if PD.POLY[k]["group"] == "아르키메데스 다면체"]),
+    ("카탈랑 다면체", [k for k in PD.ORDER if PD.POLY[k]["group"] == "카탈랑 다면체"]),
+]
+
+
+def _poly_default(k):
+    """기본 크기: 가장 긴 지름이 6cm 쯤 되게 (0.5 단위)"""
+    P = PD.POLY[k]
+    R = max(math.sqrt(x * x + y * y + z * z) for x, y, z in P["v"])
+    if P["scale"] == "edge":
+        return max(0.5, round(6.0 / (2 * R) * 2) / 2)
+    return 6.0
 CURVED = {"cylinder", "cone", "cone_frustum", "sphere", "hemisphere"}
 
 # (키, 이름, 기본값, 최소, 최대, 정수?)
@@ -40,6 +59,9 @@ PARAMS = {
     "hemisphere": [("r", "반지름", 2.5, 0.3, 20, False)],
     "stack": [],
 }
+for _k in PD.ORDER:
+    PARAMS[_k] = ([("a", "한 모서리", _poly_default(_k), 0.3, 30, False)] if PD.POLY[_k]["scale"] == "edge"
+                  else [("d", "크기 (가장 긴 지름)", _poly_default(_k), 1.0, 40, False)])
 
 # 쌓기: 층 하나 = {"shape": "line"|"dome"|"bowl", "r1": 아래 반지름, "r2": 위 반지름, "h": 높이}
 #   line: 원기둥(r1=r2), 원뿔(r2=0), 거꾸로 원뿔(r1=0), 원뿔대
@@ -207,6 +229,16 @@ def _planar(m, f):
 
 def _build(kind, p, sphere_mesh=False):
     m = Mesh()
+    if kind in PD.POLY:
+        P = PD.POLY[kind]
+        s = float(p["a"]) if P["scale"] == "edge" else float(p["d"]) / 2
+        for x, y, z in P["v"]:
+            m.add(x * s, y * s, z * s)
+        for i, f in enumerate(P["faces"]):
+            m.face(list(f), f"f{i}")
+        m.named = list(range(len(m.v)))
+        m.names = letters(len(m.v))
+        return m
     if kind in ("cube", "cuboid"):
         if kind == "cube":
             w = d = h = float(p["a"])
@@ -1116,6 +1148,9 @@ def mesh_metrics(m):
 def metrics(kind, p):
     """(겉넓이, 부피, 겉넓이의 π 계수 또는 None, 부피의 π 계수 또는 None)"""
     g = lambda k: float(p[k])
+    if kind in PD.POLY:
+        S_, V_ = mesh_metrics(build(kind, p))
+        return S_, V_, None, None
     if p.get("vmove") and kind in VMOVE_KINDS:
         S_, V_ = mesh_metrics(build(kind, p))
         return S_, V_, None, None
@@ -1225,6 +1260,12 @@ def _net_tree(m, kind, n_sides, layout):
                 return tuple(e)
         return None
     parent = {}
+    if kind in PD.POLY:          # 미리 찾아 둔, 겹치지 않는 펼치기
+        P = PD.POLY[kind]
+        for c, (pa, e) in P["net"].items():
+            parent[int(c)] = (int(pa), (int(e[0]), int(e[1])))
+        parent[P["bottom"]] = None
+        return P["bottom"], parent
     if layout == "strip" and kind in ("cube", "cuboid", "prism", "frustum") and len(m.faces) >= 4:
         sides = list(range(2, len(m.faces)))
         root = sides[0]
