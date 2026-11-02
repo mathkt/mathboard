@@ -579,7 +579,15 @@ class Geo:
 
     # ---- 중괄호
     def ends(self, o):
-        """길이 표시의 두 끝점 (평면: 점, 입체: 꼭짓점의 화면 위치)"""
+        """길이 표시의 두 끝점 (평면: 점, 입체: 꼭짓점의 화면 위치, 전개도: 모서리)"""
+        if "net" in o:
+            no = self.doc.objects.get(o["net"])
+            info = self.net(no) if no else None
+            edges = (info or {}).get("net_edges")
+            k = int(o.get("ne", -1))
+            if not edges or not (0 <= k < len(edges)):
+                return None
+            return edges[k]
         if "solid" in o:
             so = self.doc.objects.get(o["solid"])
             if not so:
@@ -591,6 +599,25 @@ class Geo:
 
     def base_normal(self, o, A, B, t):
         n = perp(t)
+        if "net" in o:
+            no = self.doc.objects.get(o["net"])
+            info = self.net(no) if no else None
+            if info and info.get("hull") is not None:
+                c = info["hull"].boundingRect().center()
+                # 모서리 바로 옆(안쪽)의 면 중심 쪽이 아닌 바깥으로
+                mid = (A + B) * 0.5
+                side = None
+                for poly in info.get("polys", []):
+                    if poly.containsPoint(mid + n * 3, Qt.OddEvenFill):
+                        side = -1
+                        break
+                    if poly.containsPoint(mid - n * 3, Qt.OddEvenFill):
+                        side = 1
+                        break
+                if side is None:
+                    side = 1 if dot(mid - c, n) >= 0 else -1
+                n = n * side
+            return n
         if "solid" in o:
             so = self.doc.objects.get(o["solid"])
             if so and dot((A + B) * 0.5 - self.solid(so)["center"], n) < 0:
@@ -1096,7 +1123,8 @@ class Geo:
         if not so or not S.net_supported(so):
             return None
         G = M.GRID
-        info = {"fills": [], "solid_path": QPainterPath(), "fold_path": QPainterPath(), "labels": [], "polys": []}
+        info = {"fills": [], "solid_path": QPainterPath(), "fold_path": QPainterPath(), "labels": [], "polys": [],
+                "net_edges": []}
         fold = float(o.get("fold", 0)) if not S.is_curved(so) else 0.0
         if S.is_curved(so):
             shapes = S.net_curved(so)
@@ -1121,8 +1149,12 @@ class Geo:
             for sh in shapes:
                 path = QPainterPath()
                 if sh[0] == "poly":
-                    path.addPolygon(QPolygonF([T(*p_) for p_ in sh[1]]))
+                    PP_ = [T(*p_) for p_ in sh[1]]
+                    path.addPolygon(QPolygonF(PP_))
                     path.closeSubpath()
+                    info["polys"].append(QPolygonF(PP_))
+                    for k_ in range(len(PP_)):
+                        info["net_edges"].append((PP_[k_], PP_[(k_ + 1) % len(PP_)]))
                 elif sh[0] == "circle":
                     path.addEllipse(T(*sh[1]), sh[2] * G, sh[2] * G)
                 else:
@@ -1131,6 +1163,8 @@ class Geo:
                     R1, R2 = r1 * G, r2 * G
                     path.moveTo(C + dir_deg(st) * R1)
                     path.lineTo(C + dir_deg(st) * R2)
+                    info["net_edges"].append((C + dir_deg(st) * R1, C + dir_deg(st) * R2))
+                    info["net_edges"].append((C + dir_deg(st + sp) * R1, C + dir_deg(st + sp) * R2))
                     path.arcTo(QRectF(C.x() - R2, C.y() - R2, 2 * R2, 2 * R2), st, sp)
                     path.lineTo(C + dir_deg(st + sp) * R1)
                     if R1 > 0.5:
@@ -1164,6 +1198,7 @@ class Geo:
                     if key in seen:
                         continue
                     seen.add(key)
+                    info["net_edges"].append((a_, b_))
                     path = info["fold_path"] if k in fc["fold"] else info["solid_path"]
                     path.moveTo(a_)
                     path.lineTo(b_)

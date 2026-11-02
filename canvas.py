@@ -997,7 +997,7 @@ class Canvas(QWidget):
         if ok:
             self.win.checkpoint()
             o[mode_key] = "custom"
-            o["text"] = text
+            o["text"] = M.pi_text(text)
             self.notify()
             self.selectionChanged.emit()
 
@@ -1289,6 +1289,17 @@ class Canvas(QWidget):
         elif t == "brace":
             vpid = self.snap_point(wp, edges=False)
             if not self.temp and not vpid:
+                ne = self.net_edge_at(wp)
+                if ne:
+                    self.win.checkpoint()
+                    for b in doc.items("brace"):
+                        if b.get("net") == ne[0] and b.get("ne") == ne[1]:
+                            self.set_selection([b["id"]])
+                            return
+                    self.set_selection([M.make_net_brace(doc, *ne)])
+                    self.notify()
+                    self.done_shape()
+                    return
                 se = self.solid_edge_at(wp)
                 if se:
                     self.win.add_solid_brace(*se)
@@ -1351,7 +1362,7 @@ class Canvas(QWidget):
             if ok and text:
                 self.win.checkpoint()
                 q = self.snap(wp, alt) if False else wp
-                self.set_selection([M.make_text(doc, q.x(), q.y(), text)])
+                self.set_selection([M.make_text(doc, q.x(), q.y(), M.pi_text(text))])
                 self.notify()
                 self.done_shape()
         elif t == "measure":
@@ -1372,6 +1383,20 @@ class Canvas(QWidget):
                 kind = acts[chosen]
             self.win.add_measure(o["id"], kind, (wp.x() + 12, wp.y() + 12))
             self.done_shape()
+
+    def net_edge_at(self, wp):
+        """전개도 모서리 근처 → (전개도 번호, 모서리 번호)"""
+        geo = Geo(self.doc)
+        best = None
+        for o in self.visible():
+            if o["type"] != "net":
+                continue
+            info = geo.net(o)
+            for k, (A, B) in enumerate((info or {}).get("net_edges") or []):
+                dd = dist_to_seg(wp, A, B)
+                if dd < self.tol() + 2 and (best is None or dd < best[0]):
+                    best = (dd, o["id"], k)
+        return (best[1], best[2]) if best else None
 
     def solid_edge_at(self, wp, only_sid=None, visible_only=False, skip_v=()):
         geo = Geo(self.doc)

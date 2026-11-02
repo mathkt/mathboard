@@ -6,6 +6,7 @@
 import copy
 import json
 import math
+import re
 
 import solid as S
 
@@ -15,7 +16,7 @@ FILE_VERSION = 1
 FILE_EXT = "dhg"
 
 DASH_NAMES = [("solid", "실선"), ("dash", "파선"), ("dot", "점선"), ("dashdot", "일점쇄선")]
-REF_KEYS = ("a", "b", "v", "c", "p", "q", "seg", "target", "solid")
+REF_KEYS = ("a", "b", "v", "c", "p", "q", "seg", "target", "solid", "net")
 
 TYPE_NAMES = {
     "point": "점", "segment": "선", "polygon": "다각형", "circle": "원",
@@ -53,6 +54,15 @@ def new_style(doc=None, width=None, dash="solid", color="#000000"):
     if width is None:
         width = doc.settings.get("line_width", 2.0) if doc else 2.0
     return {"width": float(width), "dash": dash, "color": color}
+
+
+# ---------------------------------------------------------------- π 자동 바꾸기
+_PI_RE = re.compile(r"(?<![A-Za-z])pi(?![A-Za-z])", re.IGNORECASE)
+
+
+def pi_text(s):
+    """직접 입력 글자에서 pi → π  (예: 4pi cm → 4π cm, spin 같은 낱말은 그대로)"""
+    return _PI_RE.sub("π", s or "")
 
 
 # ---------------------------------------------------------------- 참조
@@ -299,6 +309,19 @@ def make_brace(doc, a, b, side=1):
     })
 
 
+def make_net_brace(doc, nid, k):
+    """전개도 모서리(k 번째)의 길이 표시"""
+    o = {
+        "type": "brace", "net": nid, "ne": int(k), "side": 1, "height": 12.0,
+        "shape": doc.settings.get("length_shape", "arc"), "arc_height": None,
+        "style": new_style(doc, width=doc.settings.get("mark_width", 1.5),
+                           dash=doc.settings.get("length_dash", "dash")),
+        "text_mode": "auto", "text": "", "font": copy.deepcopy(doc.settings["font"]),
+        "text_color": "#000000", "label_dx": 0.0, "label_dy": 0.0,
+    }
+    return doc.add(o)
+
+
 def make_solid_brace(doc, sid, i, j):
     """입체도형 모서리(꼭짓점 번호 i, j)의 길이 표시"""
     o = {
@@ -344,10 +367,18 @@ def brace_len(doc, o):
     if "solid" in o:
         so = doc.objects.get(o["solid"])
         return S.edge_length(so, *o["sv"]) if so else 0.0
+    if "net" in o:
+        from render import Geo        # 전개도 모서리: 전개도는 실제 크기로 그려지므로 화면 길이 = 실제 길이
+        e = Geo(doc).ends(o)
+        if not e:
+            return 0.0
+        return math.hypot(e[1].x() - e[0].x(), e[1].y() - e[0].y()) / GRID
     return dist_units(doc, o["a"], o["b"])
 
 
 def brace_name(doc, o):
+    if "net" in o:
+        return ""
     if "solid" in o:
         so = doc.objects.get(o["solid"])
         if not so:

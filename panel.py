@@ -127,7 +127,6 @@ class PropertyPanel(QScrollArea):
         form.setHorizontalSpacing(6)
         form.setLabelAlignment(Qt.AlignRight)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        body.setVisible(key not in PropertyPanel.collapsed)
 
         def toggle():
             vis = not body.isVisible()
@@ -137,6 +136,9 @@ class PropertyPanel(QScrollArea):
         head.clicked.connect(toggle)
         self.lay.addWidget(head)
         self.lay.addWidget(body)
+        # 창 안에 넣은 뒤에 숨기기 (넣기 전에 보이게 하면 Windows에서 따로 작은 창이 번쩍 뜸)
+        if key in PropertyPanel.collapsed:
+            body.setVisible(False)
         return form
 
     def hrow(self, *items):
@@ -180,6 +182,16 @@ class PropertyPanel(QScrollArea):
         c.setMaximumWidth(130)
         c.currentIndexChanged.connect(lambda _i: on_change(c.currentData()))
         return c
+
+    @staticmethod
+    def pi_fix(ed, s):
+        """입력 칸에서 pi 를 치면 π 로 바꿔 보여 줌"""
+        t = M.pi_text(s)
+        if t != s:
+            pos = ed.cursorPosition() - (len(s) - len(t))
+            ed.setText(t)
+            ed.setCursorPosition(max(0, pos))
+        return t
 
     def check(self, text, value, on_change):
         c = QCheckBox(text)
@@ -1100,7 +1112,20 @@ class PropertyPanel(QScrollArea):
         form = self.group("글상자 내용")
         ed = QPlainTextEdit(texts[0].get("text", ""))
         ed.setFixedHeight(70)
-        ed.textChanged.connect(lambda: self.apply(texts, "text", lambda o: o.__setitem__("text", ed.toPlainText())))
+        def changed_():
+            t = ed.toPlainText()
+            t2 = M.pi_text(t)
+            if t2 != t:
+                cur = ed.textCursor()
+                pos = cur.position() - (len(t) - len(t2))
+                ed.blockSignals(True)
+                ed.setPlainText(t2)
+                cur = ed.textCursor()
+                cur.setPosition(max(0, min(pos, len(t2))))
+                ed.setTextCursor(cur)
+                ed.blockSignals(False)
+            self.apply(texts, "text", lambda o: o.__setitem__("text", t2))
+        ed.textChanged.connect(changed_)
         form.addRow(ed)
 
     # ------------------------------------------------------------ 중괄호
@@ -1123,6 +1148,8 @@ class PropertyPanel(QScrollArea):
                         lambda v: self.apply(tg, "bmode", lambda o: o.__setitem__("text_mode", v)))
 
         def edited(s):
+            s = self.pi_fix(ed, s)
+
             def f(o):
                 o["text"] = s
                 o["text_mode"] = "custom" if s else "auto"
@@ -1169,6 +1196,8 @@ class PropertyPanel(QScrollArea):
                          lambda v: self.apply(tg, "amode", lambda o: o.__setitem__("label_mode", v)))
 
         def edited(s):
+            s = self.pi_fix(ed, s)
+
             def f(o):
                 o["text"] = s
                 o["label_mode"] = "custom" if s else "value"

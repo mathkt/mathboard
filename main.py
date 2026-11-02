@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.9"
+APP_VERSION = "1.9.1"
 
 TOOLS = [
     ("select", "선택", "S"),
@@ -262,6 +262,15 @@ def load_shortcuts():
         return {}
 
 
+def default_dir():
+    """설정의 기본 저장 폴더 (없으면 빈 글자)"""
+    try:
+        d = str(qsettings().value("default_dir", "") or "")
+    except Exception:
+        d = ""
+    return d if d and os.path.isdir(d) else ""
+
+
 def save_shortcuts(d):
     qsettings().setValue("shortcuts", json.dumps(d, ensure_ascii=False))
 
@@ -399,10 +408,11 @@ class ToolPanel(QWidget):
             if sec is not None and sec in self.collapsed:
                 w.hide()
                 continue
-            w.show()
+            # 먼저 창 안에 넣고 나서 보이게 (넣기 전에 보이게 하면 단추마다 작은 창이 번쩍 뜸)
             if kind == "btn":
                 w.setFixedSize(bw, bh)
                 self.grid.addWidget(w, row, col)
+                w.setVisible(True)
                 col += 1
                 if col == cols:
                     row, col = row + 1, 0
@@ -412,6 +422,7 @@ class ToolPanel(QWidget):
             if kind == "wide" and on_narrow:
                 on_narrow(cols < 3)
             self.grid.addWidget(w, row, 0, 1, cols)
+            w.setVisible(True)
             row += 1
         for r in range(self.grid.rowCount() + 1):
             self.grid.setRowStretch(r, 0)
@@ -552,6 +563,21 @@ class SettingsDialog(QDialog):
         self.shape.addItem("호  ⌒", "arc")
         self.shape.setCurrentIndex(max(0, self.shape.findData(st.get("length_shape", "brace"))))
         form.addRow("새 길이 표시 기본 모양", self.shape)
+        drow = QWidget()
+        dh = QHBoxLayout(drow)
+        dh.setContentsMargins(0, 0, 0, 0)
+        self.dir_edit = QLineEdit(default_dir())
+        self.dir_edit.setPlaceholderText("(정하지 않으면 문서 폴더)")
+        dbtn = QPushButton("찾아보기…")
+
+        def pick_dir():
+            d_ = QFileDialog.getExistingDirectory(self, "기본 저장 폴더", self.dir_edit.text() or os.path.expanduser("~"))
+            if d_:
+                self.dir_edit.setText(d_)
+        dbtn.clicked.connect(pick_dir)
+        dh.addWidget(self.dir_edit, 1)
+        dh.addWidget(dbtn)
+        form.addRow("기본 저장 폴더", drow)
         self.font = QFontComboBox()
         self.font.setCurrentFont(QFont(st["font"].get("family", "맑은 고딕")))
         form.addRow("새 글자 기본 글꼴", self.font)
@@ -706,6 +732,7 @@ class SettingsDialog(QDialog):
             "math_style": self.math.isChecked(),
             "construction_traces": self.traces.isChecked(),
             "textbook": self.textbook,
+            "default_dir": self.dir_edit.text().strip(),
         }
 
 
@@ -752,6 +779,7 @@ HELP_HTML = """
 <li><b>더블클릭 → 회전 모드</b>: 끌어서 돌립니다. Esc 또는 빈 곳 클릭으로 끝. 속성 창의 버튼(겨냥도·비스듬히·앞·위·옆·아래)과 슬라이더로도 돌립니다.</li>
 <li>평소에 끌면 위치가 옮겨집니다. 꼭짓점 이름은 더블클릭해서 바꾸고 끌어서 옮깁니다.</li>
 <li><b>길이 표시</b> 도구로 모서리를 클릭하면 실제 길이(cm)가 표시되고, 돌려도 따라갑니다.</li>
+<li>전개도의 모서리도 <b>길이 표시</b> 도구로 클릭하면 길이가 표시됩니다.</li>
 <li>속성 창에서 겉넓이·부피를 볼 수 있습니다. 원기둥·원뿔·구는 π를 써서 보여 줍니다.</li>
 </ul>
 <h3>입체도형 더 쓰기</h3>
@@ -1588,7 +1616,7 @@ class MainWindow(QMainWindow):
         text, ok = QInputDialog.getMultiLineText(self, "글상자", "내용:", o.get("text", ""))
         if ok:
             self.checkpoint()
-            o["text"] = text
+            o["text"] = M.pi_text(text)
             self.panel.rebuild()
             self.changed()
 
@@ -1807,7 +1835,10 @@ class MainWindow(QMainWindow):
         return img
 
     def default_export_name(self, ext):
-        base = os.path.splitext(self.path)[0] if self.path else os.path.join(os.path.expanduser("~"), "도형")
+        if self.path:
+            base = os.path.splitext(self.path)[0]
+        else:
+            base = os.path.join(default_dir() or os.path.join(os.path.expanduser("~"), "Documents"), "도형")
         return f"{base}.{ext}"
 
     def export_png(self):
@@ -1893,7 +1924,7 @@ class MainWindow(QMainWindow):
         if not path:
             if not self.maybe_save():
                 return
-            path, _ = QFileDialog.getOpenFileName(self, "열기", os.path.dirname(self.path or ""),
+            path, _ = QFileDialog.getOpenFileName(self, "열기", os.path.dirname(self.path) if self.path else default_dir(),
                                                   f"도형 파일 (*.{M.FILE_EXT});;모든 파일 (*)")
             if not path:
                 return
@@ -1964,6 +1995,10 @@ class MainWindow(QMainWindow):
         st["length_shape"] = v["length_shape"]
         st["math_style"] = v["math_style"]
         st["construction_traces"] = v["construction_traces"]
+        try:
+            qsettings().setValue("default_dir", v["default_dir"])
+        except Exception:
+            pass
         if v["textbook"]:
             st["angle_radius"] = 16.0
             st["mark_width"] = 1.0
