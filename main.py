@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.9"
 
 TOOLS = [
     ("select", "선택", "S"),
@@ -761,6 +761,7 @@ HELP_HTML = """
 <li><b>면 색칠</b>: Alt+클릭 (앞쪽 면), Alt+Shift+클릭 (뒤쪽 면). 색과 진하기는 속성 창에서.</li>
 <li><b>자르기</b>: 속성 창 → '점 3개로 자르기'(꼭짓점·모서리 위 3곳 클릭) 또는 '방향으로 자르기'(기울기·방향·위치 슬라이더). 단면 모양 이름과 넓이가 나오고, 벌리기·한쪽 조각만 보기·단면 색을 바꿀 수 있습니다.</li>
 <li><b>겹치기(안에 넣기)</b>: 안에 넣을 입체를 고르고 속성 창 '바깥 입체'를 고르면 밑면을 맞춰 겹칩니다. 안쪽 선은 실선/점선. 함께 움직이고 함께 돕니다.</li>
+<li><b>꼭짓점 옮기기</b>: 정육면체·직육면체·각기둥·각뿔·각뿔대를 선택하고 속성 창 '꼭짓점 옮기기' → 네모 손잡이를 끕니다. '기둥 유지'는 밑면과 윗면 꼭짓점이 함께, '점 하나만'은 그 점만 움직입니다(Ctrl+끌기로 잠깐 바꾸기).</li>
 <li><b>쌓기(회전체)</b>: 입체도형 종류에서 '쌓기' → 연필·팽이·캡슐 등. 속성 창에서 층마다 원기둥·원뿔·거꾸로 원뿔·원뿔대·반구를 고르고 반지름·높이를 정합니다. ▲▼로 층 순서를 바꿉니다. 밑면을 정n각형으로 하면 각기둥·각뿔로 쌓습니다.</li>
 <li><b>선마다 실선·점선</b>: 속성 창 '선 고르기' → 선을 클릭(Shift+클릭으로 여러 개) → 자동/실선/점선/숨김, 굵기·색. 원은 앞쪽 반·뒤쪽 반을 따로 고릅니다. '모두 자동으로'로 되돌립니다. 겹친 입체는 '안쪽 선'에서 한 번에 바꿀 수도 있습니다.</li>
 </ul>
@@ -783,7 +784,7 @@ HELP_HTML = """
 <li>왼쪽 도구 창과 오른쪽 속성 창은 경계선을 끌어서 폭을 줄이거나 늘립니다(도구는 줄 수가 자동으로 바뀜). F3 도구 창, F4 속성 창 숨기기/보이기. 창 크기는 다음에도 그대로 열립니다.</li></ul>
 <h3>한글(HWP)·PPT에 넣기</h3>
 <ul>
-<li><b>Ctrl+Shift+C</b>(그림 복사) 후 한글/PPT에서 Ctrl+V</li>
+<li><b>Ctrl+C</b>(복사) 또는 <b>Ctrl+Shift+C</b>(그림 복사) 후 한글/PPT에서 Ctrl+V → 그림(PNG)으로 들어갑니다. 선택한 것이 있으면 그것만, 없으면 전체(그림 복사).</li>
 <li>파일 → PNG 그림으로 저장 (배경 투명 가능), SVG로 저장</li>
 <li>1칸 모눈 = 1cm 이므로, 붙여넣은 그림 크기가 실제 길이와 거의 같습니다.</li>
 </ul>
@@ -1662,7 +1663,11 @@ class MainWindow(QMainWindow):
         objs = [copy.deepcopy(o) for o in self.doc.objects.values() if o["id"] in need]
         self.clip = objs
         self.paste_count = 0
-        self.statusBar().showMessage(f"{len(ids)}개 복사했습니다. Ctrl+V 로 붙여넣기")
+        try:
+            self.copy_image(quiet=True)     # 한글·PPT 등에도 바로 그림(PNG)으로 붙여넣을 수 있게
+        except Exception:
+            pass
+        self.statusBar().showMessage(f"{len(ids)}개 복사했습니다. 여기서 Ctrl+V: 도형 붙여넣기 · 한글·PPT에서 Ctrl+V: 그림으로 붙여넣기")
 
     def paste(self):
         if not self.clip:
@@ -1842,7 +1847,7 @@ class MainWindow(QMainWindow):
         p.end()
         self.statusBar().showMessage(f"저장했습니다: {path}")
 
-    def copy_image(self):
+    def copy_image(self, quiet=False):
         img = self.render_image(transparent=self.doc.settings.get("png_transparent", True))
         if img is None:
             return
@@ -1859,6 +1864,8 @@ class MainWindow(QMainWindow):
         pp.end()
         data.setImageData(flat)
         QApplication.clipboard().setMimeData(data)
+        if quiet:
+            return
         what = "선택한 것만" if self.export_ids() is not None else "전체를"
         self.statusBar().showMessage(f"{what} PNG 그림으로 복사했습니다. 한글이나 PPT에서 Ctrl+V 로 붙여넣으세요.")
 

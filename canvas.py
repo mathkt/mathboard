@@ -88,6 +88,8 @@ class Canvas(QWidget):
         self.solid_pending = None     # 입체도형 도구: (종류, 크기, tz, tx) — 마우스를 따라 겨냥도 미리보기
         self.edge_pick = None         # 선 고르기: {"sid": 입체, "keys": [선 이름]}
         self.group_edit = None        # 더블클릭으로 들어간 그룹 (그 안에서는 하나씩 선택)
+        self.vedit = None             # 꼭짓점 옮기기 중인 입체
+        self.vkeep = True             # True: 기둥 유지 (밑면·윗면 꼭짓점을 함께)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(400, 300)
@@ -111,6 +113,8 @@ class Canvas(QWidget):
         self.selection = [i for i in ids if i in self.doc.objects]
         if self.edge_pick and self.selection != [self.edge_pick["sid"]]:
             self.edge_pick = None
+        if self.vedit is not None and self.selection != [self.vedit]:
+            self.vedit = None
         self.selectionChanged.emit()
         self.update()
 
@@ -142,6 +146,82 @@ class Canvas(QWidget):
             self.status.emit("선 고르기: 바꿀 선을 클릭하세요. Shift+클릭으로 여러 개, 빈 곳 클릭이나 Esc로 끝")
         self.selectionChanged.emit()
         self.update()
+
+    # ------------------------------------------------------------ 꼭짓점 옮기기
+    def start_vedit(self, sid):
+        if self.vedit == sid:
+            self.vedit = None
+            self.status.emit("꼭짓점 옮기기를 끝냈습니다.")
+        else:
+            self.win.choose_tool("select")
+            self.edge_pick = None
+            self.selection = [sid]
+            self.vedit = sid
+            self.status.emit("꼭짓점 옮기기: 네모 손잡이를 끄세요. Ctrl+끌기: 반대 방식 · Esc 또는 빈 곳 클릭: 끝")
+        self.selectionChanged.emit()
+        self.update()
+
+    def vedit_vertices(self, geo, o):
+        info = geo.solid(o)
+        m = info["a"]["mesh"]
+        return [(vi, info["P"][vi]) for vi in m.named if vi < len(info["P"])]
+
+    def vertex_handle_at(self, wp):
+        o = self.doc.objects.get(self.vedit) if self.vedit is not None else None
+        if not o:
+            return None
+        best = None
+        for vi, P in self.vedit_vertices(Geo(self.doc), o):
+            dd = length(P - wp)
+            if dd < self.tol() + 4 and (best is None or dd < best[0]):
+                best = (dd, vi)
+        return best[1] if best else None
+
+    def draw_vedit(self, p, geo):
+        o = self.doc.objects.get(self.vedit)
+        if not o:
+            self.vedit = None
+            return
+        hov = self.vertex_handle_at(self.mouse)
+        s = 5 / self.scale
+        for vi, P in self.vedit_vertices(geo, o):
+            p.setPen(QPen(QColor(40, 140, 255), 1.5 / self.scale))
+            p.setBrush(QColor(240, 140, 30) if vi == hov else QColor("white"))
+            p.drawRect(QRectF(P.x() - s, P.y() - s, 2 * s, 2 * s))
+
+    def move_vertex(self, d, wp):
+        o = self.doc.objects.get(d["oid"])
+        if not o:
+            return
+        geo = Geo(self.doc)
+        info = geo.solid(o)
+        a = info["a"]
+        p0 = {k: v for k, v in o["params"].items() if k != "vmove"}
+        base = S.build(o["kind"], p0)
+        vi = d["vi"]
+        if vi >= len(base.v):
+            return
+        bx, by, bz = base.v[vi]
+        fr = S.frame_of(o, self.doc.objects)
+        X = S.unproject(a["proj"], (wp.x() - fr["x"]) / M.GRID, (wp.y() - fr["y"]) / M.GRID, (0.0, 1.0, 0.0), by, a["shift"])
+        if X is None:
+            self.status.emit("이 방향에서는 꼭짓점을 옮길 수 없습니다. 겨냥도나 비스듬히 보기로 돌려 보세요.")
+            return
+        step = 0.5 if (self.doc.settings.get("snap") and not self.alt_now()) else 0.1
+        nx, nz = round(X[0] / step) * step, round(X[2] / step) * step
+        vm = o["params"].setdefault("vmove", {})
+        old = vm.get(str(vi), [0.0, 0.0])
+        new = [round(nx - bx, 4), round(nz - bz, 4)]
+        vm[str(vi)] = new
+        if d.get("keep"):
+            j = S.vertex_pair(o["kind"], o["params"], vi)
+            if j is not None:
+                oj = vm.get(str(j), [0.0, 0.0])
+                vm[str(j)] = [round(oj[0] + new[0] - old[0], 4), round(oj[1] + new[1] - old[1], 4)]
+        for k in [k for k, v in vm.items() if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9]:
+            del vm[k]
+        if not vm:
+            o["params"].pop("vmove", None)
 
     def edge_at(self, sid, wp):
         o = self.doc.objects.get(sid)
@@ -354,6 +434,8 @@ class Canvas(QWidget):
         self.draw_preview(p, geo)
         if self.edge_pick:
             self.draw_edge_pick(p, geo)
+        if self.vedit is not None:
+            self.draw_vedit(p, geo)
         if self.cut_pick:
             p.setPen(QPen(QColor(230, 90, 20), 2 / self.scale))
             p.setBrush(QColor(230, 90, 20, 60))
@@ -522,6 +604,18 @@ class Canvas(QWidget):
         if self.edge_pick and self.press_edge_pick(wp, mods):
             self.update()
             return
+        if self.vedit is not None:
+            vi = self.vertex_handle_at(wp)
+            if vi is not None:
+                keep = self.vkeep != bool(mods & Qt.ControlModifier)
+                self.drag = {"mode": "vmove", "oid": self.vedit, "vi": vi, "start": wp,
+                             "state": self.doc.dump(), "moved": False, "keep": keep}
+                return
+            h = self.hit(wp)
+            if not h or h[0] != self.vedit:
+                self.vedit = None
+                self.status.emit("꼭짓점 옮기기를 끝냈습니다.")
+                self.selectionChanged.emit()
         if mods & Qt.AltModifier:
             hp = self.hit(wp, kinds=("polygon",))
             if hp and self.doc.objects[hp[0]]["type"] == "polygon":
@@ -699,6 +793,9 @@ class Canvas(QWidget):
             u = geo.on_param(o["dep"]["obj"], wp)
             if u is not None:
                 o["dep"]["u"] = u
+            return
+        if mode == "vmove":
+            self.move_vertex(d, wp)
             return
         if mode == "slidering":
             so = doc.objects.get(o.get("solid"))
@@ -879,7 +976,8 @@ class Canvas(QWidget):
             else:
                 fid = S.frame_of(o, self.doc.objects)["id"]
                 self.rotating = None if self.rotating == fid else fid
-                self.set_selection([oid])
+                if self.selection != [oid]:
+                    self.set_selection([oid])
                 self.status.emit("회전 모드: 입체도형을 끌어서 돌리세요. 끝내려면 Esc 또는 빈 곳 클릭"
                                  if self.rotating else "회전 모드를 끝냈습니다.")
                 self.update()
@@ -1798,9 +1896,20 @@ class Canvas(QWidget):
 
     def press_cut_pick(self, wp):
         cp = self.cut_pick
-        pid = self.snap_point(wp, only_sid=cp["sid"])
+        pid = self.pick_point(wp)
+        if pid and not (self.doc.objects[pid].get("solid") == cp["sid"] or M.mid_solid(self.doc, self.doc.objects[pid]) == cp["sid"]):
+            pid = None
         if not pid:
-            self.status.emit("입체도형의 꼭짓점이나 모서리 위를 클릭하세요. (Esc: 취소)")
+            pid = self.snap_point(wp, only_sid=cp["sid"])
+        if not pid:
+            fa_ = self.face_at(wp)
+            if fa_ and fa_[0]["id"] == cp["sid"]:
+                o_, fi, X = fa_
+                a, b = S.face_coords(Geo(self.doc).solid(o_)["a"]["mesh"], fi, X)
+                self.win.checkpoint()
+                pid = M.make_attached_point(self.doc, o_["id"], face=fi, fa=a, fb=b)
+        if not pid:
+            self.status.emit("입체도형 위(꼭짓점·모서리·원 둘레·면)를 클릭하세요. (Esc: 취소)")
             return
         if pid in cp["pts"]:
             return
@@ -1855,6 +1964,12 @@ class Canvas(QWidget):
             self.setCursor(Qt.OpenHandCursor)
             return
         if k == Qt.Key_Escape:
+            if self.vedit is not None:
+                self.vedit = None
+                self.status.emit("꼭짓점 옮기기를 끝냈습니다.")
+                self.selectionChanged.emit()
+                self.update()
+                return
             if self.edge_pick:
                 self.edge_pick = None
                 self.status.emit("선 고르기를 끝냈습니다.")

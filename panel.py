@@ -231,6 +231,19 @@ class PropertyPanel(QScrollArea):
         super().setWidget(w)
 
     def rebuild(self):
+        # 같은 것을 다시 그릴 때는 스크롤 위치를 그대로 두고, 다 만든 뒤 한 번에 바꿔 깜빡이지 않게
+        sel_key = tuple(self.win.canvas.selection)
+        keep_scroll = sel_key == getattr(self, "_last_sel", None)
+        self._last_sel = sel_key
+        self._scroll_to = self.verticalScrollBar().value() if keep_scroll else 0
+        self.setUpdatesEnabled(False)
+        try:
+            self._rebuild()
+        finally:
+            QTimer.singleShot(0, lambda v=self._scroll_to: self.verticalScrollBar().setValue(v))
+            self.setUpdatesEnabled(True)
+
+    def _rebuild(self):
         self.updaters = []
         self._cols = self.ncols()
         w = QWidget()
@@ -357,6 +370,7 @@ class PropertyPanel(QScrollArea):
                     def f(ob):
                         ob["params"][key] = int(v) if is_int else float(v)
                         if is_int:
+                            ob["params"].pop("vmove", None)
                             ob["labels"] = list(S.build(ob["kind"], ob["params"]).names)
                             ob["lab_off"] = {}
                             ob.pop("edge_styles", None)
@@ -469,6 +483,8 @@ class PropertyPanel(QScrollArea):
             form.addRow(tip)
 
         o = tg[0]
+        if len(tg) == 1 and o["kind"] in S.VMOVE_KINDS:
+            self.build_vedit(tg, o)
         if len(tg) == 1:
             self.build_edge_pick(tg, o)
         form = self.group("숨은 선 (보이지 않는 모서리)")
@@ -651,6 +667,30 @@ class PropertyPanel(QScrollArea):
             tip = QLabel("※ 바깥 입체와 함께 움직이고 함께 돕니다.")
             tip.setStyleSheet("color:#666")
             form.addRow(tip)
+
+    # ------------------------------------------------------------ 꼭짓점 옮기기
+    def build_vedit(self, tg, o):
+        cv = self.win.canvas
+        on = cv.vedit == o["id"]
+        form = self.group("꼭짓점 옮기기")
+        b = self.button("옮기기 끝내기" if on else "꼭짓점 옮기기", lambda _=False: cv.start_vedit(o["id"]))
+        if on:
+            b.setStyleSheet("background:#d6e6fb; border:1px solid #2f80ed; border-radius:3px;")
+        moved = bool(o["params"].get("vmove"))
+        rs = self.button("처음 모양으로", lambda _=False: (
+            self.apply(tg, "vreset", lambda ob: ob["params"].pop("vmove", None)), QTimer.singleShot(0, self.rebuild)))
+        rs.setEnabled(moved)
+        form.addRow(self.hrow(b, rs))
+        if S.vertex_pair(o["kind"], o["params"], 0) is not None:
+            c = self.combo([(True, "기둥 유지 (윗면도 함께)"), (False, "점 하나만")], cv.vkeep,
+                           lambda v: setattr(cv, "vkeep", bool(v)))
+            form.addRow("방식", c)
+        tip = QLabel("네모 손잡이를 끌면 밑면과 나란하게 움직입니다.\nCtrl+끌기: 반대 방식 · 높이는 위 '크기'에서"
+                     if on else ("밑면 모양을 바꿨습니다. 겉넓이·부피는 소수로 나옵니다." if moved else
+                                 "꼭짓점을 끌어 밑면이 정다각형이 아닌 기둥·뿔을 만듭니다."))
+        tip.setStyleSheet("color:#2f80ed" if on else "color:#666")
+        tip.setWordWrap(True)
+        form.addRow(tip)
 
     # ------------------------------------------------------------ 선 고르기
     def build_edge_pick(self, tg, o):

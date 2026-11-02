@@ -805,7 +805,7 @@ class Geo:
             return c
         att = {}
         for q in self.doc.items("point"):
-            if q.get("solid") == o["id"]:
+            if q.get("solid") == o["id"] or (q.get("solid") is None and M.mid_solid(self.doc, q) == o["id"]):
                 xyz = M.attached_xyz(self.doc, q)
                 if xyz is not None:
                     att[q["id"]] = xyz

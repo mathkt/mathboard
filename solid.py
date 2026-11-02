@@ -95,6 +95,7 @@ class Mesh:
         self.centers = []    # 원의 중심 (named 안의 순서 번호)
         self.sphere_r = None
         self.convex = True
+        self.split = False
 
     def add(self, x, y, z):
         self.v.append((x, y, z))
@@ -142,7 +143,69 @@ def _band(m, bot, top, group, smooth_v=False):
             m.smooth.add(frozenset((bot[k2], top[k2])))
 
 
+VMOVE_KINDS = ("cube", "cuboid", "prism", "pyramid", "frustum")
+
+
+def vertex_pair(kind, p, i):
+    """'기둥 유지'로 옮길 때 함께 움직이는 꼭짓점 (밑면 k ↔ 윗면 k). 없으면 None"""
+    if kind in ("cube", "cuboid"):
+        n = 4
+    elif kind in ("prism", "frustum"):
+        n = int(p["n"])
+    else:
+        return None
+    if not (0 <= i < 2 * n):
+        return None
+    return i + n if i < n else i - n
+
+
 def build(kind, p, sphere_mesh=False):
+    m = _build(kind, p, sphere_mesh)
+    vm = p.get("vmove") if isinstance(p, dict) else None
+    if vm and kind in VMOVE_KINDS:
+        _apply_vmove(m, vm)
+    return m
+
+
+def _apply_vmove(m, vm):
+    """꼭짓점 옮기기: 꼭짓점마다 (dx, dz) 만큼 밑면과 나란하게 옮기고, 휘어진 면은 삼각형으로 나눔"""
+    for k, d in vm.items():
+        i = int(k)
+        if 0 <= i < len(m.v):
+            x, y, z = m.v[i]
+            m.v[i] = (x + float(d[0]), y, z + float(d[1]))
+    faces, groups = [], []
+    for f, g in zip(m.faces, m.groups):
+        if len(f) > 3 and not _planar(m, f):
+            m.split = True
+            for k in range(1, len(f) - 1):
+                faces.append([f[0], f[k], f[k + 1]])
+                groups.append(g)
+        else:
+            faces.append(f)
+            groups.append(g)
+    m.faces, m.groups = faces, groups
+    # 볼록한지 (오목하면 숨은 선을 정밀하게)
+    for f in m.faces:
+        n = newell(m, f)
+        L = math.sqrt(sum(c * c for c in n)) or 1
+        p0 = m.v[f[0]]
+        for v in m.v:
+            if sum((v[c] - p0[c]) * n[c] for c in range(3)) / L > 1e-6:
+                m.convex = False
+                return
+
+
+def _planar(m, f):
+    n = newell(m, f)
+    L = math.sqrt(sum(c * c for c in n))
+    if L < 1e-12:
+        return True
+    p0 = m.v[f[0]]
+    return all(abs(sum((m.v[v][c] - p0[c]) * n[c] for c in range(3)) / L) < 1e-6 for v in f)
+
+
+def _build(kind, p, sphere_mesh=False):
     m = Mesh()
     if kind in ("cube", "cuboid"):
         if kind == "cube":
@@ -1053,6 +1116,9 @@ def mesh_metrics(m):
 def metrics(kind, p):
     """(겉넓이, 부피, 겉넓이의 π 계수 또는 None, 부피의 π 계수 또는 None)"""
     g = lambda k: float(p[k])
+    if p.get("vmove") and kind in VMOVE_KINDS:
+        S_, V_ = mesh_metrics(build(kind, p))
+        return S_, V_, None, None
     if kind == "cube":
         a = g("a")
         return 6 * a * a, a ** 3, None, None
@@ -1135,6 +1201,8 @@ NET_LAYOUTS = [("flower", "밑면 둘레에 펼치기"), ("strip", "옆면을 �
 
 def net_supported(o):
     if o["kind"] in ("sphere", "hemisphere"):
+        return False
+    if o["params"].get("vmove") and build(o["kind"], o["params"]).split:
         return False
     if o["kind"] == "stack":
         return False

@@ -396,8 +396,25 @@ def make_measure(doc, target, kind, x, y):
 
 
 # ---------------------------------------------------------------- 계산
+def mid_solid(doc, q):
+    """같은 입체 위 두 점의 중점이면 그 입체 번호"""
+    dep = q.get("dep") or {}
+    if dep.get("t") != "mid":
+        return None
+    a, b = doc.objects.get(dep.get("a")), doc.objects.get(dep.get("b"))
+    if a and b and a.get("solid") is not None and a.get("solid") == b.get("solid"):
+        return a["solid"]
+    return None
+
+
 def attached_xyz(doc, q):
     """입체에 붙은 점의 3D 좌표(cm, 모델 좌표)"""
+    if q.get("solid") is None and mid_solid(doc, q) is not None:
+        A = attached_xyz(doc, doc.objects[q["dep"]["a"]])
+        B = attached_xyz(doc, doc.objects[q["dep"]["b"]])
+        if A is None or B is None:
+            return None
+        return tuple((A[k] + B[k]) / 2 for k in range(3))
     so = doc.objects.get(q.get("solid"))
     if not so:
         return None
