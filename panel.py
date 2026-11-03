@@ -292,6 +292,7 @@ class PropertyPanel(QScrollArea):
 
         if len(objs) == 1:
             self.build_info(objs[0])
+        self.build_shape_keep(objs)
         self.build_solid(objs)
         self.build_net(objs)
         self.build_arc(objs)
@@ -690,6 +691,24 @@ class PropertyPanel(QScrollArea):
             tip = QLabel("※ 바깥 입체와 함께 움직이고 함께 돕니다.")
             tip.setStyleSheet("color:#666")
             form.addRow(tip)
+
+    # ------------------------------------------------------------ 이름 있는 평면도형: 모양 유지
+    def build_shape_keep(self, objs):
+        import planes as PL
+        tg = [o for o in objs if o.get("shape") in PL.SHAPES and PL.CONSTRAINT.get(o["shape"])]
+        if len(tg) != 1:
+            return
+        o = tg[0]
+        form = self.group(f"{PL.SHAPES[o['shape']][0]}")
+
+        def setk(v):
+            def f(ob):
+                if v:
+                    ob["shape_rule"] = PL.CONSTRAINT[ob["shape"]]
+                else:
+                    ob.pop("shape_rule", None)
+            self.apply(tg, "shapekeep", f)
+        form.addRow(self.check("점을 끌어도 모양 유지", bool(o.get("shape_rule")), setk))
 
     # ------------------------------------------------------------ 꼭짓점 옮기기
     def build_vedit(self, tg, o):
@@ -1259,7 +1278,11 @@ class PropertyPanel(QScrollArea):
         tg = [o for o in objs if o["type"] == "tick"]
         if not tg:
             return
-        form = self.group("같은 길이 눈금")
+        par = tg[0].get("mark") == "par"
+        form = self.group("평행 표시" if par else "같은 길이 눈금")
+        if par:
+            form.addRow(self.button("방향 뒤집기 (> ↔ <)", lambda _=False: self.apply(
+                tg, "tflip", lambda o: o.__setitem__("flip", not o.get("flip", False)))))
         form.addRow("개수", self.spin(tg[0].get("count", 1), 1, 3, 1,
                                     lambda v: self.apply(tg, "tcount", lambda o: o.__setitem__("count", int(v))),
                                     decimals=0))
@@ -1306,6 +1329,7 @@ class PropertyPanel(QScrollArea):
             if t == "segment":
                 btns += [("길이 표시", lambda: w.add_brace(o["a"], o["b"])),
                          ("같은 길이 눈금", lambda: w.add_tick(o["id"])),
+                         ("평행 표시", lambda: w.add_pmark(o["id"])),
                          ("길이 측정값 표시", lambda: w.add_measure(o["id"], "length"))]
             elif t == "polygon":
                 if len(o["pts"]) == 3:

@@ -28,7 +28,8 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.11"
+CLIP_MIME = "application/x-dohyeong-objects"
 
 TOOLS = [
     ("select", "선택", "S"),
@@ -40,6 +41,7 @@ TOOLS = [
     ("regpoly", "정다각형", "N"),
     ("circle", "원", "C"),
     ("arc", "호·부채꼴", "Q"),
+    ("plane", "평면도형", "Z"),
     ("solid", "입체도형", "K"),
     None,
     ("#", "작도"),
@@ -57,6 +59,7 @@ TOOLS = [
     ("brace", "길이 표시", "B"),
     ("angle", "각 표시", "A"),
     ("tick", "같은 길이", "T"),
+    ("pmark", "평행 표시", "Shift+T"),
     ("measure", "측정값", "M"),
     ("text", "글상자", "X"),
 ]
@@ -229,6 +232,19 @@ def make_icon(name):
         p.setPen(pen)
         p.drawLine(44, 44, 48, 56)
         dotp(32, 8, ink, 5)
+    elif name == "plane":
+        p.setBrush(QColor(47, 128, 237, 40))
+        p.drawPolygon(QPolygonF([QPointF(8, 54), QPointF(30, 14), QPointF(46, 54)]))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(34, 30, 22, 22))
+    elif name == "pmark":
+        p.drawLine(6, 22, 58, 22)
+        p.drawLine(6, 48, 58, 48)
+        pen.setColor(acc)
+        p.setPen(pen)
+        for y in (22, 48):
+            p.drawLine(26, y - 7, 34, y)
+            p.drawLine(26, y + 7, 34, y)
     elif name == "solid":
         p.setBrush(QColor(47, 128, 237, 40))
         p.drawPolygon(QPolygonF([QPointF(10, 22), QPointF(40, 22), QPointF(40, 54), QPointF(10, 54)]))
@@ -607,6 +623,126 @@ class SolidDialog(QDialog):
         return self.kind(), {k: (int(s.value()) if i else float(s.value())) for k, (s, i) in self.spins.items()}
 
 
+# ---------------------------------------------------------------- 평면도형 만들기 창
+class PlaneDialog(QDialog):
+    last_kind = "square"
+    names = True
+    marks = True
+
+    def __init__(self, parent):
+        import planes as PL
+        self.PL = PL
+        super().__init__(parent)
+        self.setWindowTitle("평면도형 만들기")
+        lay = QHBoxLayout(self)
+        self.list = QListWidget()
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.rows = {}
+        for title, keys in PL.GROUPS:
+            head = QListWidgetItem(title)
+            head.setFlags(Qt.NoItemFlags)
+            hf = head.font()
+            hf.setBold(True)
+            head.setFont(hf)
+            head.setForeground(QColor("#2f5d9e"))
+            head.setBackground(QColor("#eef2f7"))
+            self.list.addItem(head)
+            for k in keys:
+                it = QListWidgetItem("   " + PL.SHAPES[k][0])
+                it.setData(Qt.UserRole, k)
+                self.list.addItem(it)
+                self.rows[k] = self.list.count() - 1
+        self.list.setFixedWidth(190)
+        lay.addWidget(self.list)
+        right = QVBoxLayout()
+        self.preview = QLabel()
+        self.preview.setFixedSize(260, 190)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("background:white; border:1px solid #d5dbe3; border-radius:4px;")
+        right.addWidget(self.preview)
+        self.form_box = QWidget()
+        self.form = QFormLayout(self.form_box)
+        right.addWidget(QLabel("크기 (cm)"))
+        right.addWidget(self.form_box)
+        self.cb_names = QCheckBox("꼭짓점 이름 붙이기 (A, B, C …)")
+        self.cb_names.setChecked(PlaneDialog.names)
+        self.cb_marks = QCheckBox("직각·같은 길이·평행 표시 붙이기")
+        self.cb_marks.setChecked(PlaneDialog.marks)
+        right.addWidget(self.cb_names)
+        right.addWidget(self.cb_marks)
+        self.keep = QLabel()
+        self.keep.setWordWrap(True)
+        self.keep.setStyleSheet("color:#2f80ed")
+        right.addWidget(self.keep)
+        tip = QLabel("확인을 누른 뒤 놓을 곳을 클릭하세요. (Shift+클릭: 계속 놓기)")
+        tip.setStyleSheet("color:#666")
+        tip.setWordWrap(True)
+        right.addWidget(tip)
+        right.addStretch()
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        right.addWidget(bb)
+        lay.addLayout(right)
+        self.spins = {}
+        self.list.currentRowChanged.connect(self.fill)
+        self.list.itemDoubleClicked.connect(lambda it: self.accept() if it.data(Qt.UserRole) else None)
+        self.list.setCurrentRow(self.rows.get(PlaneDialog.last_kind, 1))
+        self.resize(520, 540)
+
+    def kind(self):
+        it = self.list.currentItem()
+        return (it.data(Qt.UserRole) if it else None) or "square"
+
+    def fill(self, _row):
+        while self.form.rowCount():
+            self.form.removeRow(0)
+        self.spins = {}
+        for key, name, d, lo, hi in self.PL.SHAPES[self.kind()][1]:
+            s = QDoubleSpinBox()
+            s.setDecimals(1)
+            s.setSingleStep(0.5 if hi <= 40 else 5)
+            s.setRange(lo, hi)
+            s.setValue(d)
+            s.valueChanged.connect(lambda _v: self.update_preview())
+            self.form.addRow(name, s)
+            self.spins[key] = s
+        rule = self.PL.CONSTRAINT.get(self.kind())
+        self.keep.setText("※ 점을 끌어도 이 모양이 유지됩니다." if rule else "")
+        self.update_preview()
+
+    def params(self):
+        return {k: float(s.value()) for k, s in self.spins.items()}
+
+    def update_preview(self):
+        try:
+            lines, _c = self.PL.outline(self.kind(), self.params())
+        except Exception:
+            return
+        W, H = self.preview.width(), self.preview.height()
+        xs = [x for ln in lines for x, _ in ln]
+        ys = [y for ln in lines for _, y in ln]
+        sc = min((W - 30) / max(max(xs) - min(xs), 0.1), (H - 30) / max(max(ys) - min(ys), 0.1))
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(W * dpr), int(H * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(QColor("white"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor("#1f2d3d"), 2))
+        p.setBrush(QColor(47, 128, 237, 30))
+        for ln in lines:
+            p.drawPolygon(QPolygonF([QPointF(W / 2 + x * sc, H / 2 - y * sc) for x, y in ln]))
+        p.end()
+        self.preview.setPixmap(pm)
+
+    def values(self):
+        PlaneDialog.last_kind = self.kind()
+        PlaneDialog.names = self.cb_names.isChecked()
+        PlaneDialog.marks = self.cb_marks.isChecked()
+        return self.kind(), self.params(), PlaneDialog.names, PlaneDialog.marks
+
+
 # ---------------------------------------------------------------- 설정 창
 class SettingsDialog(QDialog):
     def __init__(self, win):
@@ -824,6 +960,13 @@ HELP_HTML = """
 <li>그린 뒤에는 자동으로 <b>선택</b> 도구로 돌아갑니다. 같은 도형을 여러 개 그릴 때는 <b>Shift</b>를 누른 채 그리세요.</li>
 <li>점을 찍을 때 <b>Alt</b>를 누르고 있으면 모눈에 맞추지 않습니다.</li>
 </ul>
+<h3>평면도형 (Z)</h3>
+<ul>
+<li>정삼각형·직각삼각형·정사각형·평행사변형·마름모·사다리꼴·연꼴·정n각형·원·반원·부채꼴·활꼴 등을 골라 크기를 정하고 클릭해서 놓습니다. 꼭짓점 이름과 직각·같은 길이·평행 표시가 함께 붙습니다.</li>
+<li>이름 있는 도형은 점을 끌어도 모양이 유지됩니다 (예: 정사각형은 계속 정사각형). 속성 창에서 끌 수 있습니다.</li>
+<li><b>평행 표시(Shift+T)</b>: 선분을 클릭하면 &gt;, 다시 클릭하면 &gt;&gt;. 방향은 속성 창에서 뒤집습니다.</li>
+<li><b>교점</b>: 선분·각 표시 등 점을 고르는 도구로 선과 원이 만나는 곳에 가까이 가면 주황 동그라미가 보이고, 클릭하면 그 교점을 바로 씁니다.</li>
+</ul>
 <h3>작도</h3>
 <ul>
 <li><b>중점(D)</b>: 두 점 또는 선분 · <b>수직이등분선(H)</b>: 두 점 또는 선분 · <b>각의 이등분선(J)</b>: 끝 점→꼭짓점→끝 점(또는 각 표시)</li>
@@ -878,6 +1021,7 @@ HELP_HTML = """
 <li>여러 개 선택: Shift+클릭, 빈 곳 드래그 · 전부 선택: Ctrl+A</li>
 <li>점 이름 바꾸기: 점이나 이름을 더블클릭 · 이름은 끌어서 옮길 수 있습니다.</li>
 <li>오른쪽 클릭: 바로가기 메뉴 · 방향키: 조금씩 이동 (Shift: 크게)</li>
+<li><b>다른 파일로 옮기기</b>: Ctrl+C 한 뒤 다른 도형그리기 창에서 Ctrl+V. 또는 파일 → '다른 파일의 탭 가져오기'로 한 창에 모아서 옮깁니다.</li>
 <li><b>그룹</b>: 여러 개 선택 → Ctrl+G(그룹으로 묶기), Ctrl+Shift+G(그룹 풀기). 묶은 것은 한 번에 선택·이동·복사·삭제. 그룹 안의 하나만 고치려면 더블클릭.</li>
 <li>다각형의 변은 하나씩 클릭하면 그 변만 굵기·점선을 바꿀 수 있습니다.</li>
 <li>입체 위에 그린 다각형은 안쪽을 클릭하면 선택됩니다. <b>Alt+클릭</b>하면 면 색칠 색으로 그 다각형만 칠합니다.</li>
@@ -894,7 +1038,7 @@ HELP_HTML = """
 <li>1칸 모눈 = 1cm 이므로, 붙여넣은 그림 크기가 실제 길이와 거의 같습니다.</li>
 </ul>
 <h3>단축키 (기본값 · 설정 → 환경 설정 → 단축키 에서 바꿀 수 있음)</h3>
-<p>S 선택 · P 점 · V 선분 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
+<p>S 선택 · P 점 · V 선분 · Z 평면도형 · Shift+T 평행 표시 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
 Ctrl+Z 되돌리기 · Ctrl+Y 다시하기 · Ctrl+C/V 복사/붙여넣기 · Delete 삭제 · Ctrl+S 저장 · Esc 취소<br>
 Ctrl+G 그룹 · Ctrl+Shift+G 그룹 풀기 · F9 모눈 · Shift+F9 모눈에 맞추기 · F3 도구 창 · F4 속성 창</p>
 """
@@ -1146,6 +1290,7 @@ class MainWindow(QMainWindow):
         self.a_newtab = A("newtab", F, "새 탭", self.add_tab, "Ctrl+T")
         self.a_duptab = A("duptab", F, "탭 복제", self.dup_tab, "")
         self.a_deltab = A("deltab", F, "탭 지우기", self.del_tab, "")
+        self.a_importtabs = A("importtabs", F, "다른 파일의 탭 가져오기...", self.import_tabs, "")
         self.a_undo = A("undo", E, "되돌리기", self.do_undo, "Ctrl+Z")
         self.a_redo = A("redo", E, "다시하기", self.do_redo, "Ctrl+Y")
         self.a_copy = A("copy", E, "복사", self.copy_selection, "Ctrl+C")
@@ -1233,7 +1378,7 @@ class MainWindow(QMainWindow):
     def build_menus(self):
         mb = self.menuBar()
         m = mb.addMenu("파일(&F)")
-        for a in [self.a_new, self.a_open, None, self.a_newtab, self.a_duptab, self.a_deltab, None,
+        for a in [self.a_new, self.a_open, None, self.a_newtab, self.a_duptab, self.a_deltab, self.a_importtabs, None,
                   self.a_save, self.a_saveas, None,
                   self.a_copyimg, self.a_png, self.a_svg, None, self.a_quit]:
             m.addSeparator() if a is None else m.addAction(a)
@@ -1327,6 +1472,14 @@ class MainWindow(QMainWindow):
         tp.relayout()
 
     def choose_tool(self, key):
+        if key == "plane":
+            dlg = PlaneDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                self.choose_tool("select")
+                return
+            self.canvas.plane_pending = dlg.values()
+        elif key != "plane":
+            self.canvas.plane_pending = None
         if key == "solid":
             dlg = SolidDialog(self)
             if dlg.exec() != QDialog.Accepted:
@@ -1417,12 +1570,23 @@ class MainWindow(QMainWindow):
     def add_tick(self, seg):
         self.checkpoint()
         for o in self.doc.items("tick"):
-            if o["seg"] == seg:
+            if o["seg"] == seg and o.get("mark", "tick") == "tick":
                 o["count"] = o.get("count", 1) % 3 + 1
                 self.canvas.set_selection([o["id"]])
                 break
         else:
             self.canvas.set_selection([M.make_tick(self.doc, seg)])
+        self.changed()
+
+    def add_pmark(self, seg):
+        self.checkpoint()
+        for o in self.doc.items("tick"):
+            if o["seg"] == seg and o.get("mark") == "par":
+                o["count"] = o.get("count", 1) % 3 + 1
+                self.canvas.set_selection([o["id"]])
+                break
+        else:
+            self.canvas.set_selection([M.make_tick(self.doc, seg, mark="par")])
         self.changed()
 
     def add_measure(self, oid, kind, pos=None):
@@ -1593,6 +1757,21 @@ class MainWindow(QMainWindow):
         self.doc.objects[nid]["x"] += br.width() / 2
         self.canvas.set_selection([nid])
         self.changed()
+
+    def add_plane(self, wp):
+        pend = self.canvas.plane_pending
+        if not pend:
+            return False
+        kind, params, names, marks = pend
+        self.checkpoint()
+        made = M.make_plane(self.doc, kind, params, wp.x(), wp.y(), names, marks)
+        main_ids = [i for i in made if self.doc.objects[i]["type"] in ("polygon", "circle", "arc")]
+        self.canvas.set_selection(main_ids[:1] or made[-1:])
+        self.changed()
+        import planes as PL
+        keep = " 점을 끌어도 모양이 유지됩니다." if PL.CONSTRAINT.get(kind) else ""
+        self.statusBar().showMessage(f"{PL.SHAPES[kind][0]}을(를) 놓았습니다.{keep}")
+        return True
 
     def add_solid(self, wp):
         pend = self.canvas.solid_pending
@@ -1771,12 +1950,21 @@ class MainWindow(QMainWindow):
         self.clip = objs
         self.paste_count = 0
         try:
-            self.copy_image(quiet=True)     # 한글·PPT 등에도 바로 그림(PNG)으로 붙여넣을 수 있게
+            self.copy_image(quiet=True, objs=objs)     # 한글·PPT 에는 그림(PNG), 다른 도형그리기 창에는 도형으로
         except Exception:
             pass
         self.statusBar().showMessage(f"{len(ids)}개 복사했습니다. 여기서 Ctrl+V: 도형 붙여넣기 · 한글·PPT에서 Ctrl+V: 그림으로 붙여넣기")
 
     def paste(self):
+        try:   # 다른 도형그리기 창(다른 파일)에서 복사한 도형
+            md = QApplication.clipboard().mimeData()
+            if md is not None and md.hasFormat(CLIP_MIME):
+                objs = json.loads(bytes(md.data(CLIP_MIME)).decode("utf-8"))
+                if objs and objs != self.clip:
+                    self.clip = objs
+                    self.paste_count = 0
+        except Exception:
+            pass
         if not self.clip:
             return
         self.paste_count += 1
@@ -1957,7 +2145,7 @@ class MainWindow(QMainWindow):
         p.end()
         self.statusBar().showMessage(f"저장했습니다: {path}")
 
-    def copy_image(self, quiet=False):
+    def copy_image(self, quiet=False, objs=None):
         img = self.render_image(transparent=self.doc.settings.get("png_transparent", True))
         if img is None:
             return
@@ -1973,6 +2161,8 @@ class MainWindow(QMainWindow):
         pp.drawImage(0, 0, img)
         pp.end()
         data.setImageData(flat)
+        if objs:
+            data.setData(CLIP_MIME, json.dumps(objs, ensure_ascii=False).encode("utf-8"))
         QApplication.clipboard().setMimeData(data)
         if quiet:
             return
@@ -2021,6 +2211,25 @@ class MainWindow(QMainWindow):
         self.modified = False
         self.update_title()
         self.zoom_fit()
+
+    def import_tabs(self):
+        path, _ = QFileDialog.getOpenFileName(self, "탭을 가져올 파일", os.path.dirname(self.path) if self.path else default_dir(),
+                                              f"도형 파일 (*.{M.FILE_EXT});;모든 파일 (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _settings, pages = M.load_pages(f.read())
+        except Exception as ex:
+            QMessageBox.warning(self, APP_NAME, f"파일을 열지 못했습니다.\n{ex}")
+            return
+        base = os.path.splitext(os.path.basename(path))[0]
+        for name, doc in pages:
+            doc.settings = self.settings
+            self.add_tab(f"{base}-{name}", doc, select=False)
+        self.tabbar.setCurrentIndex(len(self.pages) - 1)
+        self.switch_tab(len(self.pages) - 1)
+        self.statusBar().showMessage(f"'{os.path.basename(path)}' 의 탭 {len(pages)}개를 가져왔습니다. 탭 사이에서 Ctrl+C / Ctrl+V 로 옮기세요.")
 
     def file_save(self):
         if not self.path:

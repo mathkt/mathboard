@@ -1275,6 +1275,16 @@ class Geo:
         k = max(1, min(3, int(o.get("count", 1))))
         size = float(o.get("size", 9))
         path = QPainterPath()
+        if o.get("mark") == "par":          # 평행 표시: >, >>, >>>
+            if o.get("flip"):
+                t = t * -1
+            for i in range(k):
+                c = mid + t * ((i - (k - 1) / 2) * max(4.0, size * 0.55))
+                tip = c + t * (size * 0.3)
+                path.moveTo(c - t * (size * 0.3) + n * (size * 0.5))
+                path.lineTo(tip)
+                path.lineTo(c - t * (size * 0.3) - n * (size * 0.5))
+            return path
         for i in range(k):
             c = mid + t * ((i - (k - 1) / 2) * 4.5)
             path.moveTo(c - n * (size / 2))

@@ -87,6 +87,8 @@ def obj_refs(o):
 def remap_refs(o, m):
     if o["type"] == "polygon":
         o["pts"] = [m.get(i, i) for i in o["pts"]]
+    if o.get("shape_pts"):
+        o["shape_pts"] = [m.get(i, i) for i in o["shape_pts"]]
     for k in REF_KEYS:
         if k in o and _is_id(o[k]):
             o[k] = m.get(o[k], o[k])
@@ -410,9 +412,102 @@ def make_angle(doc, a, v, b, auto_swap=True):
     return doc.add(o)
 
 
-def make_tick(doc, seg, count=1):
-    return doc.add({"type": "tick", "seg": seg, "count": count, "size": 9.0,
-                    "style": new_style(doc, width=doc.settings.get("mark_width", 1.5))})
+def make_tick(doc, seg, count=1, mark="tick", flip=False):
+    """같은 길이 눈금(|) 또는 평행 표시(>) — mark: "tick" / "par" """
+    o = {"type": "tick", "seg": seg, "count": count, "size": 9.0,
+         "style": new_style(doc, width=doc.settings.get("mark_width", 1.5))}
+    if mark == "par":
+        o["mark"], o["flip"], o["size"] = "par", bool(flip), 8.0
+    return doc.add(o)
+
+
+def make_plane(doc, kind, params, cx, cy, names=True, marks=True):
+    """평면도형 도구: 이름 있는 평면도형을 (cx, cy) 가운데에 만들고 만든 개체 번호 목록을 돌려줌"""
+    import planes as PL
+    gm = PL.geometry(kind, params)
+    _lines, (ox, oy) = PL.outline(kind, params)
+    to = lambda q: (cx + (q[0] - ox) * GRID, cy - (q[1] - oy) * GRID)
+    pts = []
+    for k, q in enumerate(gm["pts"]):
+        x, y = to(q)
+        if not names:
+            lab = ""
+        elif gm["kind"] == "poly":
+            lab = None                      # A, B, C … 차례로
+        elif k == 0:
+            lab = "O"                       # 원의 중심
+        else:
+            lab = "" if gm["kind"] in ("circle", "concentric") else None
+        pid = make_point(doc, x, y, label=lab)
+        pts.append(pid)
+    made = list(pts)
+    rule = PL.CONSTRAINT.get(kind)
+    if gm["kind"] == "poly":
+        poly = make_polygon(doc, pts)
+        doc.objects[poly]["shape"] = kind
+        if rule:
+            doc.objects[poly]["shape_rule"] = rule
+        made.append(poly)
+        if marks:
+            n = len(pts)
+            for m in gm["marks"]:
+                if m[0] == "right":
+                    v = m[1]
+                    a, b = pts[(v - 1) % n], pts[(v + 1) % n]
+                    made.append(make_angle(doc, a, pts[v], b))
+                elif m[0] == "tick":
+                    for i, j in m[1]:
+                        sid = doc.find_segment(pts[i], pts[j])
+                        if sid:
+                            made.append(make_tick(doc, sid, m[2]))
+                elif m[0] == "par":
+                    for i, j in m[1]:
+                        sid = doc.find_segment(pts[i], pts[j])
+                        if sid:
+                            flip = doc.objects[sid]["a"] != pts[i]
+                            made.append(make_tick(doc, sid, m[2], mark="par", flip=flip))
+    elif gm["kind"] == "circle":
+        made.append(make_circle(doc, pts[0], pts[1]))
+    elif gm["kind"] == "concentric":
+        made.append(make_circle(doc, pts[0], pts[1]))
+        made.append(make_circle(doc, pts[0], pts[2]))
+    else:
+        aid = make_arc(doc, pts[0], pts[1], pts[2])
+        o = doc.objects[aid]
+        o["sector"] = bool(gm["sector"])
+        o["shape"], o["shape_rule"], o["shape_pts"] = kind, rule, list(pts)
+        made.append(aid)
+        if gm["chord"]:
+            made.append(make_segment(doc, pts[1], pts[2]))
+        if gm["sector"]:
+            made.append(make_segment(doc, pts[0], pts[1]))
+            made.append(make_segment(doc, pts[0], pts[2]))
+    return made
+
+
+def shape_points(doc, o):
+    if o["type"] == "polygon":
+        return list(o["pts"])
+    return list(o.get("shape_pts") or [])
+
+
+def enforce_shapes(doc, pid, old):
+    """점 pid 를 old 에서 옮긴 뒤, 그 점을 쓰는 '이름 있는 도형'의 나머지 점을 맞춤 (모양 유지)"""
+    import planes as PL
+    for o in list(doc.objects.values()):
+        rule = o.get("shape_rule")
+        if not rule:
+            continue
+        ids = shape_points(doc, o)
+        if pid not in ids or not all(i in doc.objects for i in ids):
+            continue
+        P = [(doc.objects[i]["x"], doc.objects[i]["y"]) for i in ids]
+        k = ids.index(pid)
+        Q = PL.enforce(rule, P, k, old)
+        for i, q in zip(ids, Q):
+            if doc.objects[i].get("dep") or doc.objects[i].get("solid") is not None:
+                continue
+            doc.objects[i]["x"], doc.objects[i]["y"] = float(q[0]), float(q[1])
 
 
 def make_text(doc, x, y, text):

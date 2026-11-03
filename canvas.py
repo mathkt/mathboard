@@ -22,6 +22,8 @@ TOOL_HINTS = {
     "brace": "선분을 클릭하거나, 두 점을 차례로 클릭하면 길이를 표시합니다. (중괄호/호 모양은 속성 창에서)",
     "angle": "각의 한쪽 끝 점 → 꼭짓점 → 다른 쪽 끝 점 순서로 클릭합니다.",
     "tick": "선분을 클릭하면 같은 길이 눈금(|)이 붙습니다. 다시 클릭하면 ||, ||| 로 바뀝니다.",
+    "pmark": "선분을 클릭하면 평행 표시(>)가 붙습니다. 다시 클릭하면 >>, >>> 로 바뀝니다. (방향은 속성 창에서 뒤집기)",
+    "plane": "놓을 곳을 클릭합니다. (Shift+클릭: 계속 놓기)",
     "text": "글상자를 놓을 곳을 클릭합니다.",
     "mid": "중점: 두 점 또는 선분을 클릭합니다.",
     "pbis": "수직이등분선: 두 점 또는 선분을 클릭합니다. (작도 흔적은 설정에서 켜고 끔)",
@@ -86,6 +88,7 @@ class Canvas(QWidget):
         self.compass_draw = None      # 끌고 있는 동안: {"start": 각, "sweep": 누적각, "last": 각}
         self.on_compass_width = None
         self.solid_pending = None     # 입체도형 도구: (종류, 크기, tz, tx) — 마우스를 따라 겨냥도 미리보기
+        self.plane_pending = None     # 평면도형 도구: (종류, 크기, 이름, 표시)
         self.edge_pick = None         # 선 고르기: {"sid": 입체, "keys": [선 이름]}
         self.group_edit = None        # 더블클릭으로 들어간 그룹 (그 안에서는 하나씩 선택)
         self.vedit = None             # 꼭짓점 옮기기 중인 입체
@@ -486,6 +489,16 @@ class Canvas(QWidget):
     def draw_preview(self, p, geo):
         if self.tool == "select":
             return
+        if self.tool == "plane" and self.plane_pending and self.underMouse():
+            import planes as PL
+            kind, params, _n, _m = self.plane_pending
+            lines, _c = PL.outline(kind, params)
+            c = self.snap(self.mouse, self.alt_now())
+            p.setPen(QPen(QColor(40, 140, 255), 1.5 / self.scale, Qt.DashLine))
+            p.setBrush(QColor(40, 140, 255, 25))
+            for ln in lines:
+                p.drawPolygon(QPolygonF([QPointF(c.x() + x * M.GRID, c.y() - y * M.GRID) for x, y in ln]))
+            return
         if self.tool == "solid" and self.solid_pending and self.underMouse():
             kind, params, tz, tx = self.solid_pending
             c = self.snap(self.mouse, self.alt_now())
@@ -512,7 +525,16 @@ class Canvas(QWidget):
                     p.drawLine(A, B)
         m = self.mouse
         hp = self.pick_point(m)
-        cur = geo.P(hp) if hp else self.snap(m, self.alt_now())
+        free_tools = ("brace", "angle", "tick", "pmark", "measure", "text")
+        cur = geo.P(hp) if hp else (m if self.tool in free_tools else self.snap(m, self.alt_now()))
+        if not hp and self.tool not in ("tick", "pmark", "measure", "text", "plane"):
+            ia = self.inter_at(m)
+            if ia:
+                cur = ia[3]
+                p.setPen(QPen(QColor(230, 120, 20), 2 / self.scale))
+                p.setBrush(QColor(230, 120, 20, 70))
+                p.drawEllipse(cur, 8 / self.scale, 8 / self.scale)
+                hp = -1
         qa = self.angle_snap(m)
         if qa is not None:
             cur = qa
@@ -554,7 +576,7 @@ class Canvas(QWidget):
             poly = self.regpoly_points(pts[0], cur, self.reg_n)
             p.drawPolygon(QPolygonF(poly))
         # 마우스 위치 표시
-        if t not in ("tick", "measure", "text"):
+        if t not in ("tick", "pmark", "measure", "text", "plane"):
             p.setPen(QPen(QColor(40, 140, 255), 1.5 / self.scale))
             p.setBrush(QColor(40, 140, 255, 60) if hp else Qt.NoBrush)
             p.drawEllipse(cur, 6 / self.scale, 6 / self.scale)
@@ -714,6 +736,7 @@ class Canvas(QWidget):
             if o["type"] == "point" and (o.get("dep") or {}).get("t") == "on" and len(sel) == 1:
                 d["mode"] = "slide2d"
             d["orig"] = {i: (doc.objects[i]["x"], doc.objects[i]["y"]) for i in pts | pos}
+            d["no_snap"] = bool(pos) and not pts and all(doc.objects[i]["type"] in ("text", "measure") for i in pos)
             d["single_point"] = (o["type"] == "point" and len(pts) == 1 and not pos)
             if o["type"] == "point" and o.get("edge") and len(sel) == 1:
                 d["mode"] = "slide"
@@ -854,7 +877,7 @@ class Canvas(QWidget):
             return
         if mode == "body":
             delta = wp - d["start"]
-            snap = doc.settings.get("snap") and not alt
+            snap = doc.settings.get("snap") and not alt and not d.get("no_snap")
             if snap and d.get("single_point"):
                 (ox, oy), = d["orig"].values()
                 q = self.snap(QPointF(ox, oy) + delta)
@@ -862,10 +885,17 @@ class Canvas(QWidget):
             elif snap:
                 G = M.GRID
                 delta = QPointF(round(delta.x() / G) * G, round(delta.y() / G) * G)
+            prev = d.get("prev")
             for i, (x, y) in d["orig"].items():
                 if i in doc.objects:
+                    if d.get("single_point") and prev is None:
+                        prev = (doc.objects[i]["x"], doc.objects[i]["y"])
                     doc.objects[i]["x"] = x + delta.x()
                     doc.objects[i]["y"] = y + delta.y()
+            if d.get("single_point"):          # 이름 있는 도형(정사각형 등)은 모양 유지
+                (pid_,) = d["orig"].keys()
+                M.enforce_shapes(doc, pid_, prev)
+                d["prev"] = (doc.objects[pid_]["x"], doc.objects[pid_]["y"])
         elif mode == "label":
             if o["type"] == "point":
                 c = wp + d["grab"]
@@ -1020,6 +1050,12 @@ class Canvas(QWidget):
         pid = self.pick_point(wp)
         if pid and (only_sid is None or self.doc.objects[pid].get("solid") == only_sid):
             return pid
+        if only_sid is None:
+            ia = self.inter_at(wp)
+            if ia:
+                pid = self.make_intersection(ia[0], ia[1], ia[3])
+                if pid:
+                    return pid
         geo = Geo(self.doc)
         tol = self.tol() + 3
         best = None
@@ -1343,13 +1379,23 @@ class Canvas(QWidget):
             self.press_construct(t, wp)
         elif t == "compass":
             self.press_compass(wp)
+        elif t == "pmark":
+            h = self.hit(wp, kinds=("segment",))
+            if not h:
+                return
+            self.win.add_pmark(h[0])
+            self.notify()
+            self.done_shape()
+        elif t == "plane":
+            if self.win.add_plane(self.snap(wp, alt)):
+                self.done_shape()
         elif t == "tick":
             h = self.hit(wp, kinds=("segment",))
             if not h:
                 return
             self.win.checkpoint()
             for o in doc.items("tick"):
-                if o["seg"] == h[0]:
+                if o["seg"] == h[0] and o.get("mark", "tick") == "tick":
                     o["count"] = o.get("count", 1) % 3 + 1
                     self.set_selection([o["id"]])
                     break
@@ -1439,6 +1485,44 @@ class Canvas(QWidget):
             if dd < tol:
                 out.append((dd, o["id"]))
         return sorted(out)
+
+    def inter_at(self, wp):
+        """마우스 근처의 교점 (선분·직선·반직선·원·호끼리) → (도형1, 도형2, 번호, 위치) 또는 None
+        이미 점이 있는 자리(다각형 꼭짓점 등)는 빼고, 선분·반직선·호는 그 범위 안의 교점만"""
+        near = self.near_prims(wp)[:5]
+        if len(near) < 2:
+            return None
+        geo = Geo(self.doc)
+        tol = self.tol() * 1.6 + 2
+        best = None
+
+        def on_obj(oid, P):
+            o = self.doc.objects[oid]
+            if o["type"] == "segment":
+                A, B = geo.P(o["a"]), geo.P(o["b"])
+                return dist_to_seg(P, A, B, o.get("kind", "segment")) < 0.5
+            if o["type"] == "arc":
+                a_ = geo.arcs(o)
+                st = QPainterPathStroker()
+                st.setWidth(2)
+                return bool(a_) and st.createStroke(a_["path"]).contains(P)
+            return True
+        for x in range(len(near)):
+            for y in range(x + 1, len(near)):
+                o1, o2 = near[x][1], near[y][1]
+                p1, p2 = geo.prim(o1), geo.prim(o2)
+                if not p1 or not p2:
+                    continue
+                for k, P in enumerate(geo.intersections(p1, p2)):
+                    dd = length(P - wp)
+                    if dd > tol or not (on_obj(o1, P) and on_obj(o2, P)):
+                        continue
+                    if any(length(QPointF(q["x"], q["y"]) - P) < 1.0 for q in self.doc.items("point")
+                           if q["id"] not in geo.undef):
+                        continue
+                    if best is None or dd < best[0]:
+                        best = (dd, o1, o2, k, P)
+        return best[1:] if best else None
 
     def make_intersection(self, o1, o2, wp):
         geo = Geo(self.doc)
