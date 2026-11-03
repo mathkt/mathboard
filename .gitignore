@@ -8,3 +8,4 @@ __pycache__/
 
 # 작업 그림 파일
 *.dhg
+version_info.txt

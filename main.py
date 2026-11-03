@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.10"
+APP_VERSION = "1.10.1"
 
 TOOLS = [
     ("select", "선택", "S"),

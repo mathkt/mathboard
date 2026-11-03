@@ -31,10 +31,14 @@ jobs:
         run: echo "v=$(python -c "import re;print(re.search(r'APP_VERSION = \"(.+?)\"', open('main.py', encoding='utf-8').read()).group(1))")" >> "$GITHUB_OUTPUT"
 
       - name: exe 하나짜리 만들기 (mdraw.exe)
-        run: python -m PyInstaller --noconfirm --onefile --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --name mdraw main.py
+        run: |
+          python installer\make_version.py mdraw.exe
+          python -m PyInstaller --noconfirm --onefile --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --version-file version_info.txt --name mdraw main.py
 
       - name: 설치용 폴더 만들기 (빨리 켜지는 방식)
-        run: python -m PyInstaller --noconfirm --onedir --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --name 도형그리기 main.py
+        run: |
+          python installer\make_version.py 도형그리기.exe
+          python -m PyInstaller --noconfirm --onedir --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --version-file version_info.txt --name 도형그리기 main.py
 
       - name: 설치 파일 만들기 (mdraw-setup.exe)
         shell: pwsh

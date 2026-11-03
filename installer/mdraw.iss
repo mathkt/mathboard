@@ -53,6 +53,12 @@ Root: HKA; Subkey: "Software\Classes\.dhg"; ValueType: string; ValueName: ""; Va
 Root: HKA; Subkey: "Software\Classes\Dohyeong.File"; ValueType: string; ValueName: ""; ValueData: "도형그리기 파일"; Flags: uninsdeletekey; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\Dohyeong.File\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExe},0"; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\Dohyeong.File\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExe}"" ""%1"""; Tasks: assoc
+Root: HKA; Subkey: "Software\Classes\.dhg\OpenWithProgids"; ValueType: string; ValueName: "Dohyeong.File"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assoc
+; '연결 프로그램' 목록의 '도형그리기' 를 지금 설치한 프로그램으로 (예전에 지운 폴더의 도형그리기.exe 를 가리키던 것을 바로잡음)
+Root: HKA; Subkey: "Software\Classes\Applications\{#MyAppExe}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#MyAppName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\{#MyAppExe}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExe},0"
+Root: HKA; Subkey: "Software\Classes\Applications\{#MyAppExe}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExe}"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\{#MyAppExe}\SupportedTypes"; ValueType: string; ValueName: ".dhg"; ValueData: ""
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "도형그리기 실행하기"; Flags: nowait postinstall skipifsilent
