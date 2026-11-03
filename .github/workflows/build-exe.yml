@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: 부품 설치
-        run: python -m pip install PySide6-Essentials pyinstaller numpy
+        run: python -m pip install PySide6-Essentials pyinstaller
 
       - name: 버전 읽기
         id: ver
@@ -31,14 +31,36 @@ jobs:
         run: echo "v=$(python -c "import re;print(re.search(r'APP_VERSION = \"(.+?)\"', open('main.py', encoding='utf-8').read()).group(1))")" >> "$GITHUB_OUTPUT"
 
       - name: exe 하나짜리 만들기 (mdraw.exe)
+        shell: pwsh
         run: |
           python installer\make_version.py mdraw.exe
-          python -m PyInstaller --noconfirm --onefile --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --version-file version_info.txt --name mdraw main.py
+          $env:MDRAW_MODE = "onefile"; $env:MDRAW_NAME = "mdraw"
+          python -m PyInstaller --noconfirm mdraw.spec
 
       - name: 설치용 폴더 만들기 (빨리 켜지는 방식)
+        shell: pwsh
         run: |
           python installer\make_version.py 도형그리기.exe
-          python -m PyInstaller --noconfirm --onedir --windowed --add-data "fonts;fonts" --add-data "icon;icon" --icon "icon\mdraw.ico" --version-file version_info.txt --name 도형그리기 main.py
+          $env:MDRAW_MODE = "onedir"; $env:MDRAW_NAME = "도형그리기"
+          python -m PyInstaller --noconfirm mdraw.spec
+
+      - name: 실제로 켜서 시험 (그리기·저장·열기·그림 내보내기)
+        shell: pwsh
+        run: |
+          foreach ($exe in @("dist\mdraw.exe", "dist\도형그리기\도형그리기.exe")) {
+            $out = Join-Path $PWD ("selftest_" + [IO.Path]::GetFileNameWithoutExtension($exe) + ".txt")
+            $p = Start-Process -FilePath $exe -ArgumentList @("--selftest", "`"$out`"") -PassThru
+            if (-not $p.WaitForExit(240000)) { $p.Kill(); throw "$exe 시험 시간 초과" }
+            Write-Host "== $exe (종료 코드 $($p.ExitCode))"
+            if (Test-Path $out) { Get-Content $out } else { throw "$exe 시험 결과 파일 없음" }
+            if ($p.ExitCode -ne 0 -or (Get-Content $out -TotalCount 1) -ne "OK") { throw "$exe 시험 실패" }
+          }
+
+      - name: 크기
+        shell: pwsh
+        run: |
+          "{0:N1} MB  mdraw.exe" -f ((Get-Item dist\mdraw.exe).Length / 1MB)
+          "{0:N1} MB  설치용 폴더" -f ((Get-ChildItem dist\도형그리기 -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 
       - name: 설치 파일 만들기 (mdraw-setup.exe)
         shell: pwsh

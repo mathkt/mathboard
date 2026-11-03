@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import (Qt, QPointF, QRectF, QSize, QSettings, QTranslator, QLibraryInfo, QBuffer,
+from PySide6.QtCore import (Qt, QTimer, QPointF, QRectF, QSize, QSettings, QTranslator, QLibraryInfo, QBuffer,
                             QIODevice, QMimeData)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QFontDatabase, QIcon, QImage, QKeySequence,
                            QPainter, QPainterPath, QPen, QPicture, QPixmap, QPolygonF)
@@ -28,7 +28,7 @@ from panel import PropertyPanel
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.11"
+APP_VERSION = "1.12"
 CLIP_MIME = "application/x-dohyeong-objects"
 
 TOOLS = [
@@ -2130,6 +2130,10 @@ class MainWindow(QMainWindow):
                                               "SVG 그림 (*.svg)")
         if not path:
             return
+        self.write_svg(path)
+
+    def write_svg(self, path):
+        from PySide6.QtSvg import QSvgGenerator
         br = self.content_bounds()
         if br is None:
             return
@@ -2369,11 +2373,71 @@ def main():
     f.setFamily("맑은 고딕")
     f.setPointSize(10)
     app.setFont(f)
+    if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
+        os._exit(selftest(sys.argv[2]))      # 끝낼 때 Qt 정리 과정은 건너뜀 (시험 결과만 중요)
     w = MainWindow()
+    # 창 배치(도구 줄 수, 속성 창 폭, 연 파일)를 다 끝낸 뒤 한 번에 보이기 — 켤 때 깜빡이지 않게
+    w.setWindowOpacity(0.0)
     w.show()
+    for _ in range(3):
+        app.processEvents()
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         w.file_open(sys.argv[1])
+        app.processEvents()
+    QTimer.singleShot(30, lambda: w.setWindowOpacity(1.0))
     sys.exit(app.exec())
+
+
+def selftest(out_path):
+    """설치 파일을 만들 때 자동으로 실행해 보는 시험: 그리기·저장·열기·그림 내보내기가 되는지"""
+    import tempfile
+    import traceback
+    log = []
+    try:
+        import planes as PL
+        w = MainWindow()
+        w.show()
+        QApplication.processEvents()
+        d = w.doc
+        G = M.GRID
+        for i, k in enumerate(list(PL.SHAPES)[:8]):
+            M.make_plane(d, k, PL.defaults(k), (3 + i * 6) * G, 3 * G)
+        kinds = ["cube", "cylinder", "cone", "sphere", "hemisphere", "stack", "dodecahedron", "trunc_icosa",
+                 "rhombic_dodeca"]
+        sids = [M.make_solid(d, k, (3 + i * 7) * G, 12 * G) for i, k in enumerate(kinds)]
+        d.objects[sids[0]]["cut"] = M.default_cut("plane")
+        d.objects[sids[5]]["params"]["layers"] = [{"shape": "line", "r1": 2.5, "r2": 2.5, "h": 2},
+                                                   {"shape": "line", "r1": 1, "r2": 1, "h": 3}]
+        for sid in (sids[0], sids[6]):
+            w.add_net(sid)
+        w.canvas.set_selection(sids[:2])
+        QApplication.processEvents()
+        w.canvas.repaint()
+        log.append(f"objects {len(d.objects)}")
+        tmp = tempfile.mkdtemp()
+        img = w.render_image(False)
+        assert img is not None and not img.isNull()
+        assert img.save(os.path.join(tmp, "t.png"))
+        w.canvas.set_selection([])
+        w.write_svg(os.path.join(tmp, "t.svg"))
+        assert os.path.getsize(os.path.join(tmp, "t.svg")) > 1000
+        w.copy_selection()
+        w.canvas.set_selection(sids[:1])
+        w.copy_selection()
+        w.paste()
+        w.path = os.path.join(tmp, "t.dhg")
+        w.file_save()
+        w2 = MainWindow()
+        w2.file_open(w.path)
+        assert len(w2.doc.objects) == len(d.objects)
+        log.append("png svg copy save open OK")
+        code = 0
+    except Exception:
+        log.append(traceback.format_exc())
+        code = 1
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(("OK\n" if code == 0 else "FAIL\n") + "\n".join(log))
+    return code
 
 
 if __name__ == "__main__":

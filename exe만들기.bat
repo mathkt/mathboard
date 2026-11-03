@@ -30,7 +30,7 @@ if errorlevel 1 (
 )
 echo [1/3] 필요한 부품 설치 중...
 %PY% -m pip install --upgrade pip >nul
-%PY% -m pip install --upgrade PySide6 pyinstaller numpy
+%PY% -m pip install --upgrade PySide6 pyinstaller
 if errorlevel 1 (
   echo [오류] 부품 설치에 실패했습니다. 인터넷 연결을 확인하세요.
   pause

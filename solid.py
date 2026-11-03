@@ -898,45 +898,64 @@ def chains(segs):
 
 
 def _occluded_flags(m, pr, offset, fronts, samples):
-    """samples: [(x,y,z)] → 앞쪽 면에 가려졌는지 [bool] (오목한 입체용, numpy 사용)"""
-    try:
-        import numpy as np
-    except Exception:
-        return [False] * len(samples)
+    """samples: [(x,y,z)] → 앞쪽 면에 가려졌는지 [bool] (오목한 입체용)
+    화면을 칸으로 나눠 그 칸에 걸친 삼각형만 따져서 빠르게 (numpy 없이)"""
+    if not samples:
+        return []
     ox, oy, oz = offset
+    S = [pr.screen(x + ox, y + oy, z + oz) + (pr.depth(x + ox, y + oy, z + oz),) for x, y, z in m.v]
     tris = []
     for fi, f in enumerate(m.faces):
         if not fronts[fi]:
             continue
         for k in range(1, len(f) - 1):
-            tris.append((f[0], f[k], f[k + 1]))
-    if not tris or not samples:
+            A, B, C = S[f[0]], S[f[k]], S[f[k + 1]]
+            v0x, v0y = C[0] - A[0], C[1] - A[1]
+            v1x, v1y = B[0] - A[0], B[1] - A[1]
+            d00 = v0x * v0x + v0y * v0y
+            d01 = v0x * v1x + v0y * v1y
+            d11 = v1x * v1x + v1y * v1y
+            den = d00 * d11 - d01 * d01
+            if abs(den) <= 1e-12:
+                continue
+            tris.append((A, v0x, v0y, v1x, v1y, d00, d01, d11, den, C[2] - A[2], B[2] - A[2],
+                         min(A[0], B[0], C[0]), max(A[0], B[0], C[0]), min(A[1], B[1], C[1]), max(A[1], B[1], C[1])))
+    if not tris:
         return [False] * len(samples)
-    S = np.array([pr.screen(x + ox, y + oy, z + oz) + (pr.depth(x + ox, y + oy, z + oz),) for x, y, z in m.v])
-    T = np.array(tris)
-    A, B, C = S[T[:, 0]], S[T[:, 1]], S[T[:, 2]]
-    P = np.array([pr.screen(x + ox, y + oy, z + oz) + (pr.depth(x + ox, y + oy, z + oz),) for x, y, z in samples])
-    v0 = (C - A)[:, :2]
-    v1 = (B - A)[:, :2]
-    d00 = (v0 * v0).sum(1)
-    d01 = (v0 * v1).sum(1)
-    d11 = (v1 * v1).sum(1)
-    den = d00 * d11 - d01 * d01
-    ok = np.abs(den) > 1e-12
+    x0 = min(t[11] for t in tris)
+    x1 = max(t[12] for t in tris)
+    y0 = min(t[13] for t in tris)
+    y1 = max(t[14] for t in tris)
+    N = 24
+    cw = max((x1 - x0) / N, 1e-9)
+    ch = max((y1 - y0) / N, 1e-9)
+    grid = {}
+    for ti, t in enumerate(tris):
+        for gx in range(max(0, int((t[11] - x0) / cw)), min(N - 1, int((t[12] - x0) / cw)) + 1):
+            for gy in range(max(0, int((t[13] - y0) / ch)), min(N - 1, int((t[14] - y0) / ch)) + 1):
+                grid.setdefault((gx, gy), []).append(ti)
     out = []
-    for p_ in P:
-        v2 = p_[:2] - A[:, :2]
-        d02 = (v0 * v2).sum(1)
-        d12 = (v1 * v2).sum(1)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            u = (d11 * d02 - d01 * d12) / den
-            v = (d00 * d12 - d01 * d02) / den
-        inside = ok & (u >= 1e-4) & (v >= 1e-4) & (u + v <= 1 - 1e-4)
-        if not inside.any():
-            out.append(False)
-            continue
-        z = A[:, 2] + u * (C[:, 2] - A[:, 2]) + v * (B[:, 2] - A[:, 2])
-        out.append(bool((inside & (z < p_[2] - 1e-4)).any()))
+    for x, y, z in samples:
+        px, py = pr.screen(x + ox, y + oy, z + oz)
+        pz = pr.depth(x + ox, y + oy, z + oz)
+        gx, gy = int((px - x0) / cw), int((py - y0) / ch)
+        hit = False
+        if 0 <= gx < N and 0 <= gy < N:
+            for ti in grid.get((gx, gy), ()):
+                A, v0x, v0y, v1x, v1y, d00, d01, d11, den, dzc, dzb = tris[ti][:11]
+                v2x, v2y = px - A[0], py - A[1]
+                d02 = v0x * v2x + v0y * v2y
+                d12 = v1x * v2x + v1y * v2y
+                u = (d11 * d02 - d01 * d12) / den
+                if u < 1e-4:
+                    continue
+                v = (d00 * d12 - d01 * d02) / den
+                if v < 1e-4 or u + v > 1 - 1e-4:
+                    continue
+                if A[2] + u * dzc + v * dzb < pz - 1e-4:
+                    hit = True
+                    break
+        out.append(hit)
     return out
 
 
