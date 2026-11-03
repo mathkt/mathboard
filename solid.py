@@ -840,6 +840,24 @@ def unproject(pr, sx, sy, n, d, shift=0.0):
     return tuple(out)
 
 
+def inside_face(m, f, n, X, eps=1e-6):
+    """3D 점 X 가 (볼록한) 면 f 안 또는 테두리 위에 있는지 (n: 바깥 법선, 단위)"""
+    sgn = 0
+    for k in range(len(f)):
+        a, b = m.v[f[k]], m.v[f[(k + 1) % len(f)]]
+        e = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        w = (X[0] - a[0], X[1] - a[1], X[2] - a[2])
+        c = cross(e, w)
+        v = c[0] * n[0] + c[1] * n[1] + c[2] * n[2]
+        if abs(v) < eps:
+            continue
+        s_ = 1 if v > 0 else -1
+        if sgn and s_ != sgn:
+            return False
+        sgn = s_
+    return True
+
+
 def part_edge(part_mesh, i, j):
     """잘린 조각의 모서리 → 원래 입체의 모서리(frozenset) 또는 None(단면 선)"""
     src = getattr(part_mesh, "src", None)

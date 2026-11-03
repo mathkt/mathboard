@@ -24,26 +24,33 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 import model as M
 import solid as S
 from canvas import Canvas
-from panel import PropertyPanel
+from panel import PropertyPanel, QuickBar
 from render import Geo, Renderer, length, norm, perp, dot
 
 APP_NAME = "도형그리기"
-APP_VERSION = "1.12"
+APP_VERSION = "1.13"
 CLIP_MIME = "application/x-dohyeong-objects"
 
 TOOLS = [
+    ("#", "그리기"),
     ("select", "선택", "S"),
     ("point", "점", "P"),
     ("segment", "선분", "V"),
     ("line", "직선", "L"),
     ("ray", "반직선", "R"),
     ("polygon", "다각형", "G"),
-    ("regpoly", "정다각형", "N"),
     ("circle", "원", "C"),
     ("arc", "호·부채꼴", "Q"),
     ("plane", "평면도형", "Z"),
     ("solid", "입체도형", "K"),
-    None,
+    ("axes", "좌표평면", "Shift+Z"),
+    ("#", "표시"),
+    ("brace", "길이 표시", "B"),
+    ("angle", "각 표시", "A"),
+    ("tick", "같은 길이", "T"),
+    ("pmark", "평행 표시", "Shift+T"),
+    ("measure", "측정값", "M"),
+    ("text", "글상자", "X"),
     ("#", "작도"),
     ("mid", "중점", "D"),
     ("pbis", "수직이등분", "H"),
@@ -55,13 +62,6 @@ TOOLS = [
     ("copyseg", "선분 옮기기", "E"),
     ("copyang", "각 옮기기", "F"),
     ("compass", "컴퍼스", "O"),
-    None,
-    ("brace", "길이 표시", "B"),
-    ("angle", "각 표시", "A"),
-    ("tick", "같은 길이", "T"),
-    ("pmark", "평행 표시", "Shift+T"),
-    ("measure", "측정값", "M"),
-    ("text", "글상자", "X"),
 ]
 
 
@@ -232,6 +232,15 @@ def make_icon(name):
         p.setPen(pen)
         p.drawLine(44, 44, 48, 56)
         dotp(32, 8, ink, 5)
+    elif name == "axes":
+        p.drawLine(8, 40, 58, 40)
+        p.drawLine(24, 58, 24, 6)
+        pen.setColor(acc)
+        p.setPen(pen)
+        path = QPainterPath()
+        path.moveTo(10, 58)
+        path.quadTo(30, -10, 56, 50)
+        p.drawPath(path)
     elif name == "plane":
         p.setBrush(QColor(47, 128, 237, 40))
         p.drawPolygon(QPolygonF([QPointF(8, 54), QPointF(30, 14), QPointF(46, 54)]))
@@ -301,8 +310,8 @@ class ToolButton(QToolButton):
         super().__init__()
         self.setDefaultAction(action)
         self.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.setIconSize(QSize(24, 24))
-        self.setFixedSize(60, 52)
+        self.setIconSize(QSize(18, 18))
+        self.setFixedSize(58, 44)
         self.setAutoRaise(True)
         self.setToolTip(action.toolTip())
 
@@ -318,20 +327,20 @@ class ToolButton(QToolButton):
             p.setPen(QPen(QColor("#2f80ed"), 1.2))
             p.setBrush(QColor("#d6e6fb"))
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 5, 5)
-        pm = a.icon().pixmap(24, 24)
-        p.drawPixmap((self.width() - 24) // 2, 3, pm)
+        pm = a.icon().pixmap(18, 18)
+        p.drawPixmap((self.width() - 18) // 2, 3, pm)
         f = QFont(self.font())
         p.setPen(QColor("#1f2d3d"))
-        f.setPointSizeF(8.5 if self.width() >= 54 else 7.5)
+        f.setPointSizeF(8 if self.width() >= 52 else 7.2)
         p.setFont(f)
         text = p.fontMetrics().elidedText(a.text(), Qt.ElideRight, self.width() - 2)
-        p.drawText(QRectF(0, 26, self.width(), 14), Qt.AlignCenter, text)
+        p.drawText(QRectF(0, 21, self.width(), 13), Qt.AlignCenter, text)
         k = shortcut_text(a)
-        if k and self.height() >= 50:
-            f.setPointSizeF(7)
+        if k and self.height() >= 42:
+            f.setPointSizeF(6.5)
             p.setFont(f)
             p.setPen(QColor("#8a94a3"))
-            p.drawText(QRectF(0, 39, self.width(), 11), Qt.AlignCenter, k)
+            p.drawText(QRectF(0, 33, self.width(), 10), Qt.AlignCenter, k)
 
 
 # ---------------------------------------------------------------- 왼쪽 도구 상자 (폭에 따라 줄 수가 바뀜)
@@ -369,7 +378,8 @@ class ToolPanel(QWidget):
         h.setText(title)
         h.setAutoRaise(True)
         h.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        h.setStyleSheet("QToolButton{font-weight:bold; color:#345; text-align:left; padding:1px 2px;}"
+        h.setStyleSheet("QToolButton{font-weight:bold; font-size:8pt; color:#456; text-align:left; padding:1px 2px;"
+                        "border-top:1px solid #d5dbe3; margin-top:2px;}"
                         "QToolButton:hover{background:#e8eef6; border-radius:3px;}")
         h.setArrowType(Qt.RightArrow if title in self.collapsed else Qt.DownArrow)
         h.setToolTip("눌러서 접기/펴기")
@@ -410,9 +420,9 @@ class ToolPanel(QWidget):
 
     def relayout(self):
         avail = max(30, self.avail_width())
-        cols = max(1, min(6, (avail + 3) // 61))
-        bw = max(30, min(72, (avail - 3 * (cols - 1)) // cols))
-        bh = 52 if bw >= 54 else 42
+        cols = 2 if avail >= 92 else 1          # 기본 2열 (아주 좁으면 1열)
+        bw = max(30, min(66, (avail - 3 * (cols - 1)) // cols))
+        bh = 44 if bw >= 44 else 36
         key = (cols, bw)
         if key == self.layout_key:
             return
@@ -743,6 +753,177 @@ class PlaneDialog(QDialog):
         return self.kind(), self.params(), PlaneDialog.names, PlaneDialog.marks
 
 
+# ---------------------------------------------------------------- 좌표평면 · 그래프 창
+class AxesDialog(QDialog):
+    last = dict(M.AXES_DEFAULT)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("좌표평면 만들기")
+        L = AxesDialog.last
+        form = QFormLayout(self)
+        self.sp = {}
+        for key, name, lo, hi, step in (("xmin", "x 가장 작은 값", -100, 0, 1), ("xmax", "x 가장 큰 값", 0, 100, 1),
+                                        ("ymin", "y 가장 작은 값", -100, 0, 1), ("ymax", "y 가장 큰 값", 0, 100, 1),
+                                        ("step", "눈금 간격", 0.1, 50, 0.5), ("unit", "1칸 길이 (cm)", 0.2, 5, 0.1)):
+            b = QDoubleSpinBox()
+            b.setRange(lo, hi)
+            b.setDecimals(2 if key == "unit" else 1)
+            b.setSingleStep(step)
+            b.setValue(float(L.get(key, M.AXES_DEFAULT[key])))
+            form.addRow(name, b)
+            self.sp[key] = b
+        self.cb = {}
+        for key, name in (("grid", "모눈 그리기"), ("numbers", "눈금 숫자"), ("arrows", "축 끝 화살표"), ("show_o", "원점 O")):
+            c = QCheckBox(name)
+            c.setChecked(bool(L.get(key, True)))
+            form.addRow(c)
+            self.cb[key] = c
+        tip = QLabel("확인을 누른 뒤 원점이 놓일 곳을 클릭하세요.")
+        tip.setStyleSheet("color:#666")
+        form.addRow(tip)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+
+    def values(self):
+        v = {k: float(b.value()) for k, b in self.sp.items()}
+        v.update({k: c.isChecked() for k, c in self.cb.items()})
+        AxesDialog.last = dict(v)
+        return v
+
+
+class GraphDialog(QDialog):
+    last_kind = "linear"
+
+    def __init__(self, parent):
+        import graphs as GR
+        self.GR = GR
+        super().__init__(parent)
+        self.setWindowTitle("그래프 넣기")
+        self.form = QFormLayout(self)
+        self.kind = QComboBox()
+        for k, n in GR.KINDS:
+            self.kind.addItem(n, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(GraphDialog.last_kind)))
+        self.form.addRow("종류", self.kind)
+        self.box = QWidget()
+        self.bf = QFormLayout(self.box)
+        self.bf.setContentsMargins(0, 0, 0, 0)
+        self.form.addRow(self.box)
+        self.preview = QLabel()
+        self.preview.setStyleSheet("color:#1a4fa0; font-size:12pt;")
+        self.form.addRow(self.preview)
+        self.msg = QLabel()
+        self.msg.setStyleSheet("color:#c0392b")
+        self.form.addRow(self.msg)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.try_accept)
+        bb.rejected.connect(self.reject)
+        self.form.addRow(bb)
+        self.kind.currentIndexChanged.connect(lambda _i: self.fill())
+        self.fill()
+        self.resize(360, 240)
+
+    def fill(self):
+        while self.bf.rowCount():
+            self.bf.removeRow(0)
+        self.sp = {}
+        k = self.kind.currentData()
+        if k == "expr":
+            self.ed = QLineEdit("x^2 - 2x - 3")
+            self.ed.textChanged.connect(lambda _t: self.upd())
+            self.bf.addRow("y =", self.ed)
+            hint = QLabel("예: 2x+1,  x^2-4,  6/x,  sqrt(x),  abs(x)")
+            hint.setStyleSheet("color:#666")
+            self.bf.addRow(hint)
+        else:
+            for key, d in self.GR.PARAMS[k]:
+                b = QDoubleSpinBox()
+                b.setRange(-1000, 1000)
+                b.setDecimals(2)
+                b.setSingleStep(0.5)
+                b.setValue(d)
+                b.valueChanged.connect(lambda _v: self.upd())
+                self.bf.addRow(key, b)
+                self.sp[key] = b
+        self.upd()
+
+    def values(self):
+        k = self.kind.currentData()
+        GraphDialog.last_kind = k
+        return k, {key: b.value() for key, b in self.sp.items()}, (self.ed.text() if k == "expr" else "")
+
+    def upd(self):
+        k, p, e = self.values()
+        self.preview.setText(self.GR.label({"gkind": k, "params": p, "expr": e}))
+        self.msg.setText("")
+
+    def try_accept(self):
+        k, _p, e = self.values()
+        if k == "expr":
+            try:
+                self.GR.compile_expr(e)
+            except Exception as ex:
+                self.msg.setText(str(ex))
+                return
+        self.accept()
+
+
+# ---------------------------------------------------------------- 옮기기·대칭·회전 창
+class TransformDialog(QDialog):
+    last = {"kind": "move", "dx": 3.0, "dy": 0.0, "angle": 90.0, "copy": True, "prime": True}
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("옮기기·대칭·회전")
+        L = TransformDialog.last
+        form = QFormLayout(self)
+        self.kind = QComboBox()
+        for k, n in (("move", "평행이동"), ("line", "선대칭 (대칭축: 선분 클릭)"), ("point", "점대칭 (중심: 점 클릭)"),
+                     ("rotate", "회전 (중심: 점 클릭)")):
+            self.kind.addItem(n, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(L["kind"])))
+        form.addRow("방법", self.kind)
+        self.dx, self.dy, self.ang = QDoubleSpinBox(), QDoubleSpinBox(), QDoubleSpinBox()
+        for sp, v, lo, hi, suf in ((self.dx, L["dx"], -100, 100, " cm"), (self.dy, L["dy"], -100, 100, " cm"),
+                                   (self.ang, L["angle"], -360, 360, "°")):
+            sp.setRange(lo, hi)
+            sp.setDecimals(1)
+            sp.setValue(v)
+            sp.setSuffix(suf)
+        form.addRow("오른쪽으로", self.dx)
+        form.addRow("위쪽으로", self.dy)
+        form.addRow("회전 각 (시계 반대)", self.ang)
+        self.copy = QCheckBox("복사본을 만들기 (원래 도형은 그대로)")
+        self.copy.setChecked(L["copy"])
+        self.prime = QCheckBox("복사본 이름에 ′ 붙이기 (A → A′)")
+        self.prime.setChecked(L["prime"])
+        form.addRow(self.copy)
+        form.addRow(self.prime)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+
+        def upd():
+            k = self.kind.currentData()
+            self.dx.setEnabled(k == "move")
+            self.dy.setEnabled(k == "move")
+            self.ang.setEnabled(k == "rotate")
+            self.prime.setEnabled(self.copy.isChecked())
+        self.kind.currentIndexChanged.connect(lambda _i: upd())
+        self.copy.toggled.connect(lambda _v: upd())
+        upd()
+
+    def values(self):
+        v = {"kind": self.kind.currentData(), "dx": self.dx.value(), "dy": self.dy.value(), "angle": self.ang.value(),
+             "copy": self.copy.isChecked(), "prime": self.prime.isChecked()}
+        TransformDialog.last = dict(v)
+        return v
+
+
 # ---------------------------------------------------------------- 설정 창
 class SettingsDialog(QDialog):
     def __init__(self, win):
@@ -960,6 +1141,19 @@ HELP_HTML = """
 <li>그린 뒤에는 자동으로 <b>선택</b> 도구로 돌아갑니다. 같은 도형을 여러 개 그릴 때는 <b>Shift</b>를 누른 채 그리세요.</li>
 <li>점을 찍을 때 <b>Alt</b>를 누르고 있으면 모눈에 맞추지 않습니다.</li>
 </ul>
+<h3>좌표평면과 그래프 (Shift+Z)</h3>
+<ul>
+<li>x·y 범위와 눈금을 정하고 원점이 놓일 곳을 클릭합니다. 좌표평면을 고르면 속성 창에서 <b>그래프 넣기</b>(정비례·일차·이차·반비례·식 직접 입력)와 <b>순서쌍 점</b>(이름에 좌표 함께)을 넣습니다.</li>
+<li>좌표평면을 옮기면 그래프와 점도 함께 움직입니다.</li>
+</ul>
+<h3>편집</h3>
+<ul>
+<li><b>옮기기·대칭·회전</b>(Ctrl+Shift+M): 고른 도형을 평행이동, 선대칭(대칭축 클릭), 점대칭(중심 클릭), 회전(중심 클릭). 복사본 이름에 ′ 를 붙일 수 있습니다.</li>
+<li><b>서식 가져오기/붙이기</b>(Ctrl+Alt+C / Ctrl+Alt+V): 선 굵기·색·점선·채우기·글꼴을 다른 도형에 그대로.</li>
+<li><b>정렬</b>(편집 → 정렬): 왼쪽·가운데·오른쪽·위·아래 맞추기, 간격 같게.</li>
+<li>속성 창 위치: 보기 → 속성 창 위치 → <b>위쪽</b>이면 자주 쓰는 것만 한 줄로, [자세히 ▸]로 전체.</li>
+<li>입체에 붙은 점끼리 이은 선분은 입체 안이나 뒤쪽 면에 있으면 자동으로 점선이 됩니다(속성 창에서 끌 수 있음).</li>
+</ul>
 <h3>평면도형 (Z)</h3>
 <ul>
 <li>정삼각형·직각삼각형·정사각형·평행사변형·마름모·사다리꼴·연꼴·정n각형·원·반원·부채꼴·활꼴 등을 골라 크기를 정하고 클릭해서 놓습니다. 꼭짓점 이름과 직각·같은 길이·평행 표시가 함께 붙습니다.</li>
@@ -1038,7 +1232,7 @@ HELP_HTML = """
 <li>1칸 모눈 = 1cm 이므로, 붙여넣은 그림 크기가 실제 길이와 거의 같습니다.</li>
 </ul>
 <h3>단축키 (기본값 · 설정 → 환경 설정 → 단축키 에서 바꿀 수 있음)</h3>
-<p>S 선택 · P 점 · V 선분 · Z 평면도형 · Shift+T 평행 표시 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
+<p>S 선택 · P 점 · V 선분 · Z 평면도형 · Shift+Z 좌표평면 · Shift+T 평행 표시 · L 직선 · R 반직선 · G 다각형 · N 정다각형 · C 원 · K 입체도형 · B 길이 · A 각 · T 같은 길이 · M 측정값 · X 글상자<br>
 Ctrl+Z 되돌리기 · Ctrl+Y 다시하기 · Ctrl+C/V 복사/붙여넣기 · Delete 삭제 · Ctrl+S 저장 · Esc 취소<br>
 Ctrl+G 그룹 · Ctrl+Shift+G 그룹 풀기 · F9 모눈 · Shift+F9 모눈에 맞추기 · F3 도구 창 · F4 속성 창</p>
 """
@@ -1119,22 +1313,30 @@ class MainWindow(QMainWindow):
         self.tools_dock = tdock
         self.group_edit = None
 
+        self.quickbar = QuickBar(self)
         self.build_actions()
         self.build_menus()
         self.build_toolbars()
         self.canvas.selectionChanged.connect(self.panel.rebuild)
+        self.canvas.selectionChanged.connect(lambda: self.quickbar.rebuild() if self.quickbar.isVisible() else None)
         self.canvas.changed.connect(self.panel.refresh_info)
+        self.canvas.changed.connect(lambda: self.quickbar.schedule() if self.quickbar.isVisible() else None)
         self.canvas.status.connect(lambda s: self.statusBar().showMessage(s))
         self.choose_tool("select")
         self.update_title()
         self.resize(1360, 860)
-        self.resizeDocks([self.tools_dock, self.panel_dock], [204, 290], Qt.Horizontal)
+        self.resizeDocks([self.tools_dock, self.panel_dock], [136, 260], Qt.Horizontal)
         try:
             st_ = qsettings().value("win_state")
             if st_ is not None:
                 self.restoreState(st_)
         except Exception:
             pass
+        try:
+            pos = str(qsettings().value("panel_pos", "right") or "right")
+        except Exception:
+            pos = "right"
+        self.set_panel_pos(pos, first=True)
 
     # ------------------------------------------------------------ 탭
     @property
@@ -1300,6 +1502,14 @@ class MainWindow(QMainWindow):
         self.a_all = A("all", E, "모두 선택", self.select_all, "Ctrl+A")
         self.a_hide = A("hide", E, "숨기기", self.hide_selection, "Ctrl+H")
         self.a_group = A("group", E, "그룹으로 묶기", self.group_selection, "Ctrl+G")
+        self.a_fmtc = A("fmtcopy", E, "서식 가져오기", self.copy_format, "Ctrl+Alt+C")
+        self.a_fmtv = A("fmtpaste", E, "서식 붙이기", self.paste_format, "Ctrl+Alt+V")
+        self.a_xform = A("xform", E, "옮기기·대칭·회전...", self.transform_dialog, "Ctrl+Shift+M")
+        self.a_align = {}
+        for key, name in (("left", "왼쪽 맞추기"), ("hcenter", "가운데 맞추기 (가로)"), ("right", "오른쪽 맞추기"),
+                          ("top", "위 맞추기"), ("vcenter", "가운데 맞추기 (세로)"), ("bottom", "아래 맞추기"),
+                          ("dist_h", "가로 간격 같게"), ("dist_v", "세로 간격 같게")):
+            self.a_align[key] = A("align_" + key, E, name, lambda key=key: self.align(key), "")
         self.a_ungroup = A("ungroup", E, "그룹 풀기", self.ungroup_selection, "Ctrl+Shift+G")
         self.a_showall = A("showall", E, "숨긴 개체 모두 보이기", self.show_all_hidden, "Ctrl+Shift+H")
         st = self.doc.settings
@@ -1384,12 +1594,29 @@ class MainWindow(QMainWindow):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("편집(&E)")
         for a in [self.a_undo, self.a_redo, None, self.a_copy, self.a_paste, self.a_dup, self.a_del,
-                  None, self.a_all, self.a_group, self.a_ungroup, None, self.a_hide, self.a_showall]:
+                  None, self.a_all, self.a_group, self.a_ungroup, None, self.a_fmtc, self.a_fmtv, None,
+                  self.a_xform]:
             m.addSeparator() if a is None else m.addAction(a)
+        am = m.addMenu("정렬")
+        for k in ("left", "hcenter", "right", None, "top", "vcenter", "bottom", None, "dist_h", "dist_v"):
+            am.addSeparator() if k is None else am.addAction(self.a_align[k])
+        m.addSeparator()
+        m.addAction(self.a_hide)
+        m.addAction(self.a_showall)
         m = mb.addMenu("보기(&V)")
         for a in [self.a_grid, self.a_snap, None, self.a_tools, self.a_panel, None,
                   self.a_zin, self.a_zout, self.a_z100, self.a_zfit]:
             m.addSeparator() if a is None else m.addAction(a)
+        pm_ = m.addMenu("속성 창 위치")
+        grp = QActionGroup(self)
+        self.a_pos = {}
+        for key, name in (("right", "오른쪽 (모든 속성)"), ("top", "위쪽 (자주 쓰는 것만 한 줄로)")):
+            a = QAction(name, self)
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, key=key: self.set_panel_pos(key))
+            grp.addAction(a)
+            pm_.addAction(a)
+            self.a_pos[key] = a
         m = mb.addMenu("작도(&C)")
         m.addAction("삼각형 작도 (SSS·SAS·ASA)…", self.triangle_dialog)
         for key, name in (("mid", "중점"), ("pbis", "수직이등분선"), ("abis", "각의 이등분선"), ("perp", "수선"),
@@ -1424,8 +1651,15 @@ class MainWindow(QMainWindow):
                   self.a_zfit, self.a_grid, self.a_snap, None, self.a_tools, self.a_panel]:
             top.addSeparator() if a is None else top.addAction(a)
         top.setObjectName("top_bar")
+        qtb = QToolBar("속성 (위쪽)")
+        qtb.setObjectName("quick_bar")
+        qtb.setMovable(False)
+        qtb.addWidget(self.quickbar)
+        self.quick_tb = qtb
         top.setStyleSheet("QToolButton{padding:1px 6px;}")
         self.addToolBar(Qt.TopToolBarArea, top)
+        self.addToolBarBreak(Qt.TopToolBarArea)
+        self.addToolBar(Qt.TopToolBarArea, self.quick_tb)
         self.apply_shortcuts(self.custom_shortcuts)
 
         tp = self.tool_panel
@@ -1471,7 +1705,46 @@ class MainWindow(QMainWindow):
         tp.layout_key = None
         tp.relayout()
 
+    def set_panel_pos(self, pos, first=False):
+        """속성 창 위치: right = 오른쪽 창, top = 위쪽 한 줄 막대 (자세히 ▸ 로 오른쪽 창)"""
+        self.panel_pos = pos
+        if hasattr(self, "a_pos"):
+            self.a_pos[pos].setChecked(True)
+        top = pos == "top"
+        self.quick_tb.setVisible(top)
+        if top:
+            self.quickbar.rebuild()
+            if not first:
+                self.panel_dock.hide()
+        elif not first:
+            self.panel_dock.show()
+        try:
+            qsettings().setValue("panel_pos", pos)
+        except Exception:
+            pass
+
+    def show_full_panel(self):
+        self.panel_dock.show()
+        self.panel_dock.raise_()
+        self.panel.rebuild()
+
+    def add_graph(self, axes_id):
+        dlg = GraphDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        kind, params, expr = dlg.values()
+        self.checkpoint()
+        gid = M.make_graph(self.doc, axes_id, kind, params, expr)
+        self.canvas.set_selection([gid])
+        self.changed()
+
     def choose_tool(self, key):
+        if key == "axes":
+            dlg = AxesDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                self.choose_tool("select")
+                return
+            self.canvas.axes_pending = dlg.values()
         if key == "plane":
             dlg = PlaneDialog(self)
             if dlg.exec() != QDialog.Accepted:
@@ -1941,11 +2214,27 @@ class MainWindow(QMainWindow):
     def select_all(self):
         self.canvas.set_selection([o["id"] for o in self.doc.objects.values() if not o.get("hidden")])
 
+    def with_parts(self, ids):
+        """다각형·부채꼴 등을 복사·옮길 때 변(선분)도 함께"""
+        out = list(ids)
+        for i in ids:
+            o = self.doc.objects.get(i)
+            if not o:
+                continue
+            pts = o["pts"] if o["type"] == "polygon" else (o.get("shape_pts") or [])
+            for a in pts:
+                for b in pts:
+                    if a < b:
+                        sid = self.doc.find_segment(a, b)
+                        if sid and sid not in out:
+                            out.append(sid)
+        return out
+
     def copy_selection(self):
         ids = self.selected()
         if not ids:
             return
-        need = self.doc.requirements(ids)
+        need = self.doc.requirements(self.with_parts(ids))
         objs = [copy.deepcopy(o) for o in self.doc.objects.values() if o["id"] in need]
         self.clip = objs
         self.paste_count = 0
@@ -1970,16 +2259,25 @@ class MainWindow(QMainWindow):
         self.paste_count += 1
         off = 20 * self.paste_count
         self.checkpoint()
+        _m, new_ids = self.clone_objs(self.clip, off)
+        self.canvas.set_selection(new_ids)
+        self.changed()
+
+    def clone_objs(self, objs, off=0.0, prime=False):
+        """개체 목록(사본)을 새 번호로 문서에 넣음 → (옛 번호→새 번호, 새 번호 목록)"""
         mapping, new_ids = {}, []
-        for o in self.clip:
+        for o in objs:
             n = copy.deepcopy(o)
             old = n.pop("id")
             M.remap_refs(n, mapping)
-            if n["type"] in ("point", "text", "measure", "solid"):
+            if n["type"] in ("point", "text", "measure", "solid", "net", "axes") and off:
                 n["x"] += off
                 n["y"] += off
             if n["type"] == "point":
-                n["label"] = self.doc.next_label()
+                if prime:
+                    n["label"] = (n.get("label") or "") + ("′" if n.get("label") else "")
+                else:
+                    n["label"] = self.doc.next_label() if n.get("label") else ""
             nid = self.doc.add(n)
             mapping[old] = nid
             new_ids.append(nid)
@@ -1990,8 +2288,201 @@ class MainWindow(QMainWindow):
                 if g not in gmap:
                     gmap[g] = self.new_group_id()
                 self.doc.objects[nid]["group"] = gmap[g]
-        self.canvas.set_selection(new_ids)
+        return mapping, new_ids
+
+    # ------------------------------------------------------------ 서식 복사
+    FMT_KEYS = ("style", "hid_style", "fill", "alpha", "font", "text_color", "color", "size")
+
+    def copy_format(self):
+        ids = self.selected()
+        if not ids:
+            self.statusBar().showMessage("서식을 가져올 도형을 먼저 고르세요.")
+            return
+        o = self.doc.objects[ids[0]]
+        if o["type"] == "polygon":          # 다각형은 변의 선 모양을 가져옴
+            segs = self.panel.line_targets([o])
+            fmt = {k: copy.deepcopy(o[k]) for k in ("fill", "alpha") if k in o}
+            if segs:
+                fmt["style"] = copy.deepcopy(segs[0]["style"])
+            self.fmt = fmt
+        else:
+            self.fmt = {k: copy.deepcopy(o[k]) for k in self.FMT_KEYS if k in o}
+        self.statusBar().showMessage("서식을 가져왔습니다. 바꿀 도형을 고르고 '서식 붙이기'(Ctrl+Alt+V)를 누르세요.")
+
+    def paste_format(self):
+        fmt = getattr(self, "fmt", None)
+        ids = self.selected()
+        if not fmt or not ids:
+            self.statusBar().showMessage("먼저 '서식 가져오기'(Ctrl+Alt+C)를 하고, 바꿀 도형을 고르세요.")
+            return
+        self.checkpoint()
+        objs = [self.doc.objects[i] for i in ids]
+        targets = {o["id"]: o for o in objs}
+        for t in self.panel.line_targets(objs):
+            targets[t["id"]] = t
+        for o in targets.values():
+            for k, v in fmt.items():
+                if k in o and type(o[k]) is type(v):
+                    o[k] = copy.deepcopy(v)
+        self.panel.rebuild()
         self.changed()
+        self.statusBar().showMessage(f"{len(ids)}개에 서식을 붙였습니다.")
+
+    # ------------------------------------------------------------ 정렬
+    def unit_bounds(self, ids):
+        geo = Geo(self.doc)
+        rect = None
+
+        def add(r):
+            nonlocal rect
+            rect = r if rect is None else rect.united(r)
+        for i in ids:
+            o = self.doc.objects.get(i)
+            if not o:
+                continue
+            t = o["type"]
+            if t == "solid":
+                add(geo.solid(o)["hull"].boundingRect())
+            elif t == "text":
+                add(geo.text_rect(o))
+            elif t == "measure":
+                add(geo.measure_rect(o))
+            elif t == "net":
+                ni = geo.net(o)
+                if ni:
+                    add(ni["hull"].boundingRect())
+            elif t == "axes":
+                add(geo.axes(o)["rect"])
+            elif t == "circle":
+                C = geo.P(o["c"])
+                R = length(geo.P(o["p"]) - C)
+                add(QRectF(C.x() - R, C.y() - R, 2 * R, 2 * R))
+            else:
+                for q in self.doc.point_ids_of([i]):
+                    P = geo.P(q)
+                    add(QRectF(P.x(), P.y(), 0.01, 0.01))
+        return rect
+
+    def align(self, how):
+        sel = self.selected()
+        units, seen = [], set()
+        for i in sel:
+            if i in seen:
+                continue
+            g = self.doc.objects[i].get("group")
+            u = [j for j in sel if g is not None and self.doc.objects[j].get("group") == g] or [i]
+            seen |= set(u)
+            units.append(u)
+        boxes = [(u, self.unit_bounds(u)) for u in units]
+        boxes = [(u, b) for u, b in boxes if b is not None]
+        if len(boxes) < 2 or (how.startswith("dist") and len(boxes) < 3):
+            self.statusBar().showMessage("정렬은 2개 이상, 간격 맞추기는 3개 이상 고르세요.")
+            return
+        self.checkpoint()
+        allr = boxes[0][1]
+        for _u, b in boxes[1:]:
+            allr = allr.united(b)
+        if how in ("left", "hcenter", "right", "top", "vcenter", "bottom"):
+            for u, b in boxes:
+                dx = {"left": allr.left() - b.left(), "right": allr.right() - b.right(),
+                      "hcenter": allr.center().x() - b.center().x()}.get(how, 0.0)
+                dy = {"top": allr.top() - b.top(), "bottom": allr.bottom() - b.bottom(),
+                      "vcenter": allr.center().y() - b.center().y()}.get(how, 0.0)
+                M.translate(self.doc, u, dx, dy)
+        else:
+            horiz = how == "dist_h"
+            boxes.sort(key=lambda t: t[1].left() if horiz else t[1].top())
+            total = sum(b.width() if horiz else b.height() for _u, b in boxes)
+            span = (allr.width() if horiz else allr.height()) - total
+            gap = span / (len(boxes) - 1)
+            cur = allr.left() if horiz else allr.top()
+            for u, b in boxes:
+                if horiz:
+                    M.translate(self.doc, u, cur - b.left(), 0)
+                    cur += b.width() + gap
+                else:
+                    M.translate(self.doc, u, 0, cur - b.top())
+                    cur += b.height() + gap
+        self.changed()
+
+    # ------------------------------------------------------------ 옮기기·대칭·회전
+    def transform_dialog(self):
+        ids = self.selected()
+        if not ids:
+            self.statusBar().showMessage("옮길 도형을 먼저 고르세요.")
+            return
+        dlg = TransformDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        G = M.GRID
+        if v["kind"] == "move":
+            dx, dy = v["dx"] * G, -v["dy"] * G
+            self.apply_transform(ids, lambda x, y: (x + dx, y + dy), False, v)
+        elif v["kind"] == "line":
+            self.canvas.xform = {"need": "line", "cb": lambda seg: self.reflect_line(ids, seg, v)}
+            self.statusBar().showMessage("대칭축이 될 선분·직선을 클릭하세요. (Esc: 취소)")
+        else:
+            self.canvas.xform = {"need": "point", "cb": lambda pid: self.about_point(ids, pid, v)}
+            self.statusBar().showMessage(("대칭의 중심" if v["kind"] == "point" else "회전의 중심")
+                                         + "이 될 점을 클릭하세요. (Esc: 취소)")
+
+    def reflect_line(self, ids, seg, v):
+        o = self.doc.objects[seg]
+        geo = Geo(self.doc)
+        A, B = geo.P(o["a"]), geo.P(o["b"])
+        d = B - A
+        L2 = d.x() ** 2 + d.y() ** 2
+        if L2 < 1e-9:
+            return
+
+        def f(x, y):
+            t = ((x - A.x()) * d.x() + (y - A.y()) * d.y()) / L2
+            px, py = A.x() + d.x() * t, A.y() + d.y() * t
+            return 2 * px - x, 2 * py - y
+        self.apply_transform(ids, f, True, v)
+
+    def about_point(self, ids, pid, v):
+        C = Geo(self.doc).P(pid)
+        if v["kind"] == "point":
+            self.apply_transform(ids, lambda x, y: (2 * C.x() - x, 2 * C.y() - y), False, v)
+            return
+        t = math.radians(v["angle"])
+        c, s_ = math.cos(t), math.sin(t)
+
+        def f(x, y):           # 시계 반대 방향 (화면은 아래가 +y)
+            dx, dy = x - C.x(), y - C.y()
+            return C.x() + dx * c + dy * s_, C.y() - dx * s_ + dy * c
+        self.apply_transform(ids, f, False, v)
+
+    def apply_transform(self, ids, f, mirror, v):
+        self.checkpoint()
+        ids = self.with_parts(ids)
+        if v["copy"]:
+            need = self.doc.requirements(ids)
+            objs = [copy.deepcopy(o) for o in self.doc.objects.values() if o["id"] in need]
+            mapping, _new = self.clone_objs(objs, 0, prime=v["prime"])
+            targets = [mapping[i] for i in ids if i in mapping]
+        else:
+            targets = list(ids)
+        pts, pos = M.movable(self.doc, targets)
+        for i in pts | pos:
+            o = self.doc.objects[i]
+            o["x"], o["y"] = f(o["x"], o["y"])
+        if mirror:      # 거울에 비치면 도는 방향이 바뀜: 각·호의 두 끝, 길이 표시의 쪽을 바꿈
+            for i in targets:
+                o = self.doc.objects.get(i)
+                if not o:
+                    continue
+                if o["type"] == "angle":
+                    o["a"], o["b"] = o["b"], o["a"]
+                elif o["type"] == "arc" and o.get("q") is not None:
+                    o["p"], o["q"] = o["q"], o["p"]
+                elif o["type"] == "brace":
+                    o["side"] = -o.get("side", 1)
+        self.canvas.set_selection(targets)
+        self.changed()
+        self.statusBar().showMessage("옮겼습니다." if not v["copy"] else "복사본을 만들었습니다.")
 
     def duplicate(self):
         self.copy_selection()
@@ -2410,6 +2901,13 @@ def selftest(out_path):
                                                    {"shape": "line", "r1": 1, "r2": 1, "h": 3}]
         for sid in (sids[0], sids[6]):
             w.add_net(sid)
+        ax = M.make_axes(d, 5 * G, 22 * G)
+        M.make_graph(d, ax, "quad", {"a": 1, "p": 0, "q": -2})
+        M.make_graph(d, ax, "expr", {}, "abs(x)-1")
+        M.make_coord_point(d, ax, 2, 3, True)
+        tri = [i for i in M.make_plane(d, "right_tri", PL.defaults("right_tri"), 20 * G, 22 * G)
+               if d.objects[i]["type"] == "polygon"]
+        w.apply_transform(tri, lambda x, y: (x + 60, y), False, {"copy": True, "prime": True})
         w.canvas.set_selection(sids[:2])
         QApplication.processEvents()
         w.canvas.repaint()

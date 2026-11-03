@@ -302,3 +302,76 @@ def enforce(rule, P, k, old):
             return P
         return _similar(P, k, old, 0)
     return P
+
+
+# ---------------------------------------------------------------- 놓은 뒤 크기 다시 재기 / 바꾸기
+def _ang(a, v, b):
+    u, w = _sub(a, v), _sub(b, v)
+    c = _dot(u, w) / max(_len(u) * _len(w), 1e-12)
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def _dist_line(p, a, b):
+    d = _unit(_sub(b, a))
+    return abs(_cross(d, _sub(p, a)))
+
+
+def measure(kind, P, arc_span=None):
+    """화면 좌표(cm, 방향 상관없음) 점들 → 지금 모양의 크기 값"""
+    L = lambda i, j: round(_len(_sub(P[i], P[j])), 2)
+    r1 = lambda v: round(v, 1)
+    if kind == "eq_tri":
+        return {"a": L(1, 2)}
+    if kind == "iso_tri":
+        return {"a": L(1, 2), "b": L(0, 1)}
+    if kind == "right_tri":
+        return {"a": L(2, 1), "b": L(2, 0)}
+    if kind == "right_iso_tri":
+        return {"a": L(2, 0)}
+    if kind == "tri306090":
+        return {"a": L(0, 1)}
+    if kind == "obtuse_tri":
+        return {"a": L(1, 2), "b": L(1, 0), "ang": r1(_ang(P[0], P[1], P[2]))}
+    if kind == "square":
+        return {"a": L(0, 1)}
+    if kind == "rect":
+        return {"w": L(1, 2), "h": L(0, 1)}
+    if kind == "para":
+        return {"w": L(1, 2), "s": L(1, 0), "ang": r1(_ang(P[0], P[1], P[2]))}
+    if kind == "rhombus":
+        return {"a": L(1, 2), "ang": r1(_ang(P[0], P[1], P[2]))}
+    if kind in ("trap", "iso_trap"):
+        out = {"a": L(1, 2), "b": L(0, 3), "h": round(_dist_line(P[0], P[1], P[2]), 2)}
+        if kind == "trap":
+            out["off"] = round(_dot(_sub(P[0], P[1]), _unit(_sub(P[2], P[1]))), 2)
+        return out
+    if kind == "kite":
+        return {"w": L(1, 3), "t": round(_dist_line(P[0], P[1], P[3]), 2), "u": round(_dist_line(P[2], P[1], P[3]), 2)}
+    if kind.startswith("reg"):
+        return {"a": L(0, 1)}
+    if kind == "circle":
+        return {"r": L(0, 1)}
+    if kind == "concentric":
+        return {"r": L(0, 1), "R": L(0, 2)}
+    if kind in ("semicircle", "sector", "arcseg"):
+        out = {"r": L(0, 1)}
+        if kind != "semicircle" and arc_span is not None:
+            out["ang"] = r1(arc_span)
+        return out
+    return {}
+
+
+def place(kind, params, P_now):
+    """새 크기 값으로 점 위치를 다시 계산: 첫 점의 자리와 첫 변(원은 중심→첫 점)의 방향은 그대로.
+    P_now: 지금 화면 좌표(cm, y 아래쪽) → 새 화면 좌표(cm)"""
+    gm = geometry(kind, params)
+    Q = [(x, -y) for x, y in gm["pts"]]          # 위가 +y → 화면(아래가 +y)
+    a0 = math.atan2(Q[1][1] - Q[0][1], Q[1][0] - Q[0][0])
+    a1 = math.atan2(P_now[1][1] - P_now[0][1], P_now[1][0] - P_now[0][0])
+    t = a1 - a0
+    c, s_ = math.cos(t), math.sin(t)
+    out = []
+    for q in Q:
+        dx, dy = q[0] - Q[0][0], q[1] - Q[0][1]
+        out.append((P_now[0][0] + dx * c - dy * s_, P_now[0][1] + dx * s_ + dy * c))
+    return out

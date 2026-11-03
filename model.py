@@ -16,12 +16,13 @@ FILE_VERSION = 1
 FILE_EXT = "dhg"
 
 DASH_NAMES = [("solid", "실선"), ("dash", "파선"), ("dot", "점선"), ("dashdot", "일점쇄선")]
-REF_KEYS = ("a", "b", "v", "c", "p", "q", "seg", "target", "solid", "net")
+REF_KEYS = ("a", "b", "v", "c", "p", "q", "seg", "target", "solid", "net", "axes")
 
 TYPE_NAMES = {
     "point": "점", "segment": "선", "polygon": "다각형", "circle": "원",
     "brace": "길이 표시", "angle": "각 표시", "tick": "같은 길이 눈금",
     "text": "글상자", "measure": "측정값", "solid": "입체도형", "arc": "호·부채꼴", "trace": "작도 흔적", "net": "전개도",
+    "axes": "좌표평면", "graph": "그래프",
 }
 
 
@@ -70,7 +71,7 @@ def _is_id(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-DEP_KEYS = ("a", "b", "v", "p", "q", "c", "base", "o1", "o2", "obj")
+DEP_KEYS = ("a", "b", "v", "p", "q", "c", "base", "o1", "o2", "obj", "axes")
 
 
 def obj_refs(o):
@@ -467,10 +468,14 @@ def make_plane(doc, kind, params, cx, cy, names=True, marks=True):
                             flip = doc.objects[sid]["a"] != pts[i]
                             made.append(make_tick(doc, sid, m[2], mark="par", flip=flip))
     elif gm["kind"] == "circle":
-        made.append(make_circle(doc, pts[0], pts[1]))
+        cid = make_circle(doc, pts[0], pts[1])
+        doc.objects[cid]["shape"], doc.objects[cid]["shape_pts"] = kind, list(pts)
+        made.append(cid)
     elif gm["kind"] == "concentric":
-        made.append(make_circle(doc, pts[0], pts[1]))
-        made.append(make_circle(doc, pts[0], pts[2]))
+        for q in pts[1:]:
+            cid = make_circle(doc, pts[0], q)
+            doc.objects[cid]["shape"], doc.objects[cid]["shape_pts"] = kind, list(pts)
+            made.append(cid)
     else:
         aid = make_arc(doc, pts[0], pts[1], pts[2])
         o = doc.objects[aid]
@@ -483,6 +488,34 @@ def make_plane(doc, kind, params, cx, cy, names=True, marks=True):
             made.append(make_segment(doc, pts[0], pts[1]))
             made.append(make_segment(doc, pts[0], pts[2]))
     return made
+
+
+def plane_measure(doc, o):
+    """이름 있는 평면도형의 지금 크기 값 (cm, 도)"""
+    import planes as PL
+    ids = shape_points(doc, o)
+    if not ids or not all(i in doc.objects for i in ids):
+        return {}
+    P = [(doc.objects[i]["x"] / GRID, doc.objects[i]["y"] / GRID) for i in ids]
+    span = arc_angles(doc, o)[1] if o["type"] == "arc" else None
+    return PL.measure(o["shape"], P, span)
+
+
+def plane_resize(doc, o, params):
+    """이름 있는 평면도형의 크기를 바꿈 (자리·방향은 그대로)"""
+    import planes as PL
+    ids = shape_points(doc, o)
+    if not ids or not all(i in doc.objects for i in ids):
+        return
+    full = PL.defaults(o["shape"])
+    full.update(plane_measure(doc, o))
+    full.update(params)
+    P = [(doc.objects[i]["x"] / GRID, doc.objects[i]["y"] / GRID) for i in ids]
+    Q = PL.place(o["shape"], full, P)
+    for i, q in zip(ids, Q):
+        if doc.objects[i].get("dep") or doc.objects[i].get("solid") is not None:
+            continue
+        doc.objects[i]["x"], doc.objects[i]["y"] = q[0] * GRID, q[1] * GRID
 
 
 def shape_points(doc, o):
@@ -508,6 +541,71 @@ def enforce_shapes(doc, pid, old):
             if doc.objects[i].get("dep") or doc.objects[i].get("solid") is not None:
                 continue
             doc.objects[i]["x"], doc.objects[i]["y"] = float(q[0]), float(q[1])
+
+
+def movable(doc, ids):
+    """ids 를 옮길 때 실제로 좌표를 바꿀 것: (자유로운 점 번호 집합, 자기 위치(x,y)를 가진 개체 번호 집합)"""
+    pts, pos = set(), set()
+    for i in ids:
+        ob = doc.objects.get(i)
+        if not ob:
+            continue
+        t = ob["type"]
+        if t == "solid":
+            pos.add(ob.get("host") if ob.get("host") in doc.objects else i)
+        elif t in ("text", "measure", "net", "axes"):
+            pos.add(i)
+        elif t == "tick":
+            seg = doc.objects.get(ob["seg"])
+            if seg:
+                pts |= {seg["a"], seg["b"]}
+        elif t in ("brace", "angle", "graph"):
+            continue
+        else:
+            pts |= doc.point_ids_of([i])
+    pts = {i for i in pts if doc.objects[i].get("solid") is None and not doc.objects[i].get("dep")}
+    return pts, pos
+
+
+def translate(doc, ids, dx, dy):
+    pts, pos = movable(doc, ids)
+    for i in pts | pos:
+        doc.objects[i]["x"] += dx
+        doc.objects[i]["y"] += dy
+
+
+AXES_DEFAULT = {"unit": 1.0, "xmin": -5.0, "xmax": 5.0, "ymin": -5.0, "ymax": 5.0, "step": 1.0,
+                "grid": True, "numbers": True, "arrows": True, "show_o": True}
+
+
+def make_axes(doc, x, y, params=None):
+    """좌표평면: (x, y) 가 원점. unit = 1 눈금의 길이(cm)"""
+    o = {"type": "axes", "x": float(x), "y": float(y), "xlabel": "x", "ylabel": "y",
+         "style": new_style(doc, width=1.3),
+         "grid_style": {"width": 0.6, "dash": "solid", "color": "#c9d4e2"},
+         "font": dict(copy.deepcopy(doc.settings["font"]), size=max(9, int(doc.settings["font"].get("size", 14)) - 3)),
+         "text_color": "#000000"}
+    o.update(AXES_DEFAULT)
+    if params:
+        o.update(params)
+    return doc.add(o)
+
+
+def make_graph(doc, axes, gkind, params=None, expr=""):
+    import graphs as GR
+    p = {k: v for k, v in GR.PARAMS[gkind]}
+    if params:
+        p.update(params)
+    return doc.add({"type": "graph", "axes": axes, "gkind": gkind, "params": p, "expr": expr,
+                    "style": new_style(doc, width=2.0, color="#1a4fa0"), "show_eq": True,
+                    "font": copy.deepcopy(doc.settings["font"]), "text_color": "#1a4fa0"})
+
+
+def make_coord_point(doc, axes, x, y, show_xy=False):
+    pid = make_dep_point(doc, {"t": "coord", "axes": axes, "x": float(x), "y": float(y)})
+    o = doc.objects[pid]
+    o["show_xy"] = bool(show_xy)
+    return pid
 
 
 def make_text(doc, x, y, text):

@@ -73,8 +73,13 @@ def math_runs(line):
     - 소문자 한 글자(x, a)와 그리스 문자는 기울임
     - 대문자(점 이름 A, B)와 두 글자 이상(cm, sin)은 곧게"""
     out = []
-    line = re.sub(r"\s*([+=<>±×÷−]|(?<=[\w)°])-(?=[\w(]))\s*",
-                  lambda m_: "\u2009" + (m_.group(1).replace("-", "−")) + "\u2009", line)
+    def _op(m_):
+        op = m_.group(1).replace("-", "−")
+        before = m_.string[:m_.start()].rstrip()
+        if op == "−" and (not before or before[-1] in "=(+−×÷<>±,"):
+            return (" " if m_.group(0)[:1].isspace() and before else "") + "−"     # 음수 부호(−5)는 붙여 씀
+        return "\u2009" + op + "\u2009"
+    line = re.sub(r"\s*([+=<>±×÷−]|(?<=[\w)°])-(?=[\w(]))\s*", _op, line)
     for t in _TOKEN.findall(line):
         if t == "°":
             kind = "deg"
@@ -255,6 +260,97 @@ class Geo:
         if self.undef:
             self.undef = doc.dependents(self.undef)
 
+    def seg_hidden3d(self, o):
+        """같은 입체에 붙은 두 점을 잇는 선분이 보이지 않는 곳(입체 안, 뒤쪽 면)에 있으면 True"""
+        key = ("h3", o["id"])
+        if key in self._solids:
+            return self._solids[key]
+        res = False
+        doc = self.doc
+        qa, qb = doc.objects.get(o.get("a")), doc.objects.get(o.get("b"))
+        sid_ = None
+        if qa and qb:
+            sa = qa.get("solid") if qa.get("solid") is not None else M.mid_solid(doc, qa)
+            sb = qb.get("solid") if qb.get("solid") is not None else M.mid_solid(doc, qb)
+            if sa is not None and sa == sb:
+                sid_ = sa
+        so = doc.objects.get(sid_) if sid_ is not None else None
+        if so and not so.get("cut") and o.get("kind", "segment") == "segment":
+            A, B = M.attached_xyz(doc, qa), M.attached_xyz(doc, qb)
+            info = self.solid(so)
+            whole = info["a"].get("whole")
+            mesh = info["a"]["mesh"]
+            if A is not None and B is not None and whole and whole.get("fronts") and mesh.sphere_r is None:
+                common = []
+                for fi, f in enumerate(mesh.faces):
+                    n = S.newell(mesh, f)
+                    L = math.sqrt(sum(c * c for c in n)) or 1.0
+                    n = tuple(c / L for c in n)
+                    p0 = mesh.v[f[0]]
+                    d = sum(n[k] * p0[k] for k in range(3))
+                    if all(abs(sum(n[k] * X[k] for k in range(3)) - d) < 1e-5 and S.inside_face(mesh, f, n, X)
+                           for X in (A, B)):
+                        common.append(fi)
+                if common:
+                    res = not any(whole["fronts"][fi] for fi in common if fi < len(whole["fronts"]))
+                else:
+                    res = True
+        self._solids[key] = res
+        return res
+
+    # ---- 좌표평면·그래프
+    def axes(self, o):
+        G = M.GRID
+        u = float(o.get("unit", 1)) * G
+        O = QPointF(o["x"], o["y"])
+        x0, x1 = float(o.get("xmin", -5)), float(o.get("xmax", 5))
+        y0, y1 = float(o.get("ymin", -5)), float(o.get("ymax", 5))
+        if x1 <= x0:
+            x1 = x0 + 1
+        if y1 <= y0:
+            y1 = y0 + 1
+        rect = QRectF(O.x() + x0 * u, O.y() - y1 * u, (x1 - x0) * u, (y1 - y0) * u)
+        return {"O": O, "u": u, "x0": x0, "x1": x1, "y0": y0, "y1": y1, "rect": rect,
+                "to": lambda x, y: QPointF(O.x() + x * u, O.y() - y * u)}
+
+    def graph_paths(self, o):
+        """그래프 선(끊어진 곳마다 따로)과 식 글자 자리"""
+        import graphs as GR
+        ax = self.doc.objects.get(o.get("axes"))
+        if not ax:
+            return None
+        a = self.axes(ax)
+        f = GR.func(o)
+        x0, x1, y0, y1 = a["x0"], a["x1"], a["y0"], a["y1"]
+        N = 600
+        path = QPainterPath()
+        down = False
+        prev = None
+        last_in = None
+        span = y1 - y0
+        for i in range(N + 1):
+            x = x0 + (x1 - x0) * i / N
+            try:
+                y = f(x)
+            except Exception:
+                y = None
+            if y is None or not math.isfinite(y) or (prev is not None and abs(y - prev) > span * 2):
+                down = False
+                prev = y if (y is not None and math.isfinite(y)) else None
+                if prev is None:
+                    continue
+            prev = y
+            yc = max(y0 - span, min(y1 + span, y))
+            P = a["to"](x, yc)
+            if down:
+                path.lineTo(P)
+            else:
+                path.moveTo(P)
+                down = True
+            if y0 <= y <= y1:
+                last_in = P
+        return {"path": path, "rect": a["rect"], "end": last_in}
+
     def solid_screen(self, so, xyz):
         a = self.solid(so)["a"]
         fr = S.frame_of(so, self.doc.objects)
@@ -327,6 +423,12 @@ class Geo:
     def dep_pos(self, dep):
         t = dep.get("t")
         G = M.GRID
+        if t == "coord":
+            ax = self.doc.objects.get(dep.get("axes"))
+            if not ax:
+                return None
+            u = float(ax.get("unit", 1)) * G
+            return QPointF(ax["x"] + float(dep["x"]) * u, ax["y"] - float(dep["y"]) * u)
         if t == "mid":
             A, B = self.pt(dep["a"]), self.pt(dep["b"])
             return (A + B) * 0.5 if A and B else None
@@ -547,11 +649,20 @@ class Geo:
         return QPointF(o["x"], o["y"])
 
     # ---- 점 이름
+    def label_text(self, o):
+        """점 이름 (좌표평면 위 점은 '좌표 함께'면 A(2, 3))"""
+        t = o.get("label", "")
+        dep = o.get("dep") or {}
+        if t and dep.get("t") == "coord" and o.get("show_xy"):
+            from graphs import nice
+            t += f"({nice(dep['x'])}, {nice(dep['y'])})".replace("-", "−")
+        return t
+
     def point_label(self, pid):
         o = self.doc.objects[pid]
         if not o.get("show_label", True) or not o.get("label"):
             return None
-        w, h = self.tsize(o["label"], o["font"])
+        w, h = self.tsize(self.label_text(o), o["font"])
         P = self.P(pid)
         if o.get("label_auto", True):
             if pid in self.vcent:
@@ -1319,6 +1430,10 @@ class Renderer:
         for o in objs:
             groups.setdefault(o["type"], []).append(o)
         g = lambda t: groups.get(t, [])
+        for o in g("axes"):
+            self.draw_axes(p, o)
+        for o in g("graph"):
+            self.draw_graph(p, o)
         for o in g("polygon"):
             self.draw_polygon(p, o)
         for o in g("circle"):
@@ -1367,7 +1482,7 @@ class Renderer:
         for o in g("point"):
             r = self.geo.point_label(o["id"])
             if r:
-                self.draw_label(p, r, o["label"], o["font"], o.get("text_color", "#000"),
+                self.draw_label(p, r, self.geo.label_text(o), o["font"], o.get("text_color", "#000"),
                                 o["id"] in self.sel)
         for o in g("solid"):
             info = self.geo.solid(o)
@@ -1384,6 +1499,97 @@ class Renderer:
                             o.get("text_color", "#000"), o["id"] in self.sel, Qt.AlignLeft | Qt.AlignTop)
 
     # ---- 각 개체
+    def draw_axes(self, p, o):
+        from graphs import nice
+        a = self.geo.axes(o)
+        R, O, u = a["rect"], a["O"], a["u"]
+        step = max(float(o.get("step", 1)), 1e-6)
+        sel = o["id"] in self.sel
+        if sel:
+            p.setPen(QPen(HALO, 1.5, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(R.adjusted(-6, -6, 6, 6))
+        ks = lambda lo, hi: [k * step for k in range(int(math.ceil(lo / step - 1e-9)), int(math.floor(hi / step + 1e-9)) + 1)]
+        if o.get("grid", True):
+            p.setPen(qpen(o.get("grid_style", {"width": 0.6, "color": "#c9d4e2"})))
+            for x in ks(a["x0"], a["x1"]):
+                p.drawLine(a["to"](x, a["y0"]), a["to"](x, a["y1"]))
+            for y in ks(a["y0"], a["y1"]):
+                p.drawLine(a["to"](a["x0"], y), a["to"](a["x1"], y))
+        st = o["style"]
+        p.setPen(qpen(st))
+        ext = 0.45 * u if o.get("arrows", True) else 0
+        xa = 0 if a["y0"] <= 0 <= a["y1"] else a["y0"]
+        ya = 0 if a["x0"] <= 0 <= a["x1"] else a["x0"]
+        X0, X1 = a["to"](a["x0"], xa), a["to"](a["x1"], xa) + QPointF(ext, 0)
+        Y0, Y1 = a["to"](ya, a["y0"]), a["to"](ya, a["y1"]) + QPointF(0, -ext)
+        p.drawLine(X0, X1)
+        p.drawLine(Y0, Y1)
+        if o.get("arrows", True):
+            h = 4 + float(st.get("width", 1.3)) * 2
+            p.setBrush(QColor(st.get("color", "#000")))
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygonF([X1 + QPointF(2, 0), X1 + QPointF(-h, -h * 0.45), X1 + QPointF(-h, h * 0.45)]))
+            p.drawPolygon(QPolygonF([Y1 + QPointF(0, -2), Y1 + QPointF(-h * 0.45, h), Y1 + QPointF(h * 0.45, h)]))
+            p.setBrush(Qt.NoBrush)
+        p.setPen(qpen(st))
+        t = 3.0
+        for x in ks(a["x0"], a["x1"]):
+            if abs(x) > 1e-9:
+                P = a["to"](x, xa)
+                p.drawLine(P + QPointF(0, -t), P + QPointF(0, t))
+        for y in ks(a["y0"], a["y1"]):
+            if abs(y) > 1e-9:
+                P = a["to"](ya, y)
+                p.drawLine(P + QPointF(-t, 0), P + QPointF(t, 0))
+        fd, col = o["font"], o.get("text_color", "#000")
+        if o.get("numbers", True):
+            for x in ks(a["x0"], a["x1"]):
+                if abs(x) < 1e-9:
+                    continue
+                s = nice(x).replace("-", "−")
+                w, th = self.geo.tsize(s, fd)
+                P = a["to"](x, xa)
+                self.draw_label(p, QRectF(P.x() - w / 2, P.y() + 4, w, th), s, fd, col, False)
+            for y in ks(a["y0"], a["y1"]):
+                if abs(y) < 1e-9:
+                    continue
+                s = nice(y).replace("-", "−")
+                w, th = self.geo.tsize(s, fd)
+                P = a["to"](ya, y)
+                self.draw_label(p, QRectF(P.x() - w - 5, P.y() - th / 2, w, th), s, fd, col, False)
+        if o.get("show_o", True) and xa == 0 and ya == 0:
+            w, th = self.geo.tsize("O", fd)
+            self.draw_label(p, QRectF(O.x() - w - 4, O.y() + 3, w, th), "O", fd, col, False)
+        for s, P, dx, dy in ((o.get("xlabel", "x"), X1, 4, 2), (o.get("ylabel", "y"), Y1, 6, -2)):
+            if s:
+                w, th = self.geo.tsize(s, fd)
+                r = QRectF(P.x() + dx, P.y() + dy, w, th) if s == o.get("xlabel", "x") else QRectF(P.x() + dx, P.y() - th / 2 + dy, w, th)
+                self.draw_label(p, r, s, fd, col, False)
+
+    def draw_graph(self, p, o):
+        import graphs as GR
+        info = self.geo.graph_paths(o)
+        if not info:
+            return
+        p.save()
+        p.setClipRect(info["rect"].adjusted(-1, -1, 1, 1))
+        p.setBrush(Qt.NoBrush)
+        if o["id"] in self.sel:
+            p.setPen(qpen(o["style"], 6, HALO))
+            p.drawPath(info["path"])
+        p.setPen(qpen(o["style"]))
+        p.drawPath(info["path"])
+        p.restore()
+        if o.get("show_eq", True) and info["end"] is not None:
+            s = GR.label(o)
+            w, th = self.geo.tsize(s, o["font"])
+            E = info["end"] + QPointF(o.get("label_dx", 0.0), o.get("label_dy", 0.0))
+            R = info["rect"]
+            x = min(max(E.x() - w - 4, R.left() + 2), R.right() - w - 2)
+            y = min(max(E.y() - th - 2, R.top() + 2), R.bottom() - th - 2)
+            self.draw_label(p, QRectF(x, y, w, th), s, o["font"], o.get("text_color", "#000"), o["id"] in self.sel)
+
     def draw_label(self, p, rect, text, fd, color, selected, align=Qt.AlignCenter):
         if not text:
             return
@@ -1563,6 +1769,10 @@ class Renderer:
                 if o["type"] == "point" and not o.get("helper"):
                     xs.append(o["x"])
                     ys.append(o["y"])
+                elif o["type"] == "axes":
+                    br = self.geo.axes(o)["rect"]
+                    xs += [br.left(), br.right()]
+                    ys += [br.top(), br.bottom()]
                 elif o["type"] == "solid":
                     br = self.geo.solid(o)["hull"].boundingRect()
                     xs += [br.left(), br.right()]
@@ -1601,10 +1811,13 @@ class Renderer:
                 return
         else:
             line = self.geo.seg_line(o)
+        st = o["style"]
+        if o.get("auto3d", True) and st.get("dash", "solid") == "solid" and self.geo.seg_hidden3d(o):
+            st = dict(st, dash="dash")      # 입체 안을 지나거나 뒤쪽 면 위의 선 → 점선
         if o["id"] in self.sel:
             p.setPen(qpen(o["style"], 7, HALO))
             p.drawLine(line)
-        p.setPen(qpen(o["style"]))
+        p.setPen(qpen(st))
         p.drawLine(line)
 
     def draw_brace(self, p, o):

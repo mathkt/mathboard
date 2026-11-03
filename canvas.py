@@ -24,6 +24,7 @@ TOOL_HINTS = {
     "tick": "선분을 클릭하면 같은 길이 눈금(|)이 붙습니다. 다시 클릭하면 ||, ||| 로 바뀝니다.",
     "pmark": "선분을 클릭하면 평행 표시(>)가 붙습니다. 다시 클릭하면 >>, >>> 로 바뀝니다. (방향은 속성 창에서 뒤집기)",
     "plane": "놓을 곳을 클릭합니다. (Shift+클릭: 계속 놓기)",
+    "axes": "원점(O)이 놓일 곳을 클릭합니다. 그래프·순서쌍 점은 좌표평면을 고른 뒤 속성 창에서 넣습니다.",
     "text": "글상자를 놓을 곳을 클릭합니다.",
     "mid": "중점: 두 점 또는 선분을 클릭합니다.",
     "pbis": "수직이등분선: 두 점 또는 선분을 클릭합니다. (작도 흔적은 설정에서 켜고 끔)",
@@ -89,6 +90,8 @@ class Canvas(QWidget):
         self.on_compass_width = None
         self.solid_pending = None     # 입체도형 도구: (종류, 크기, tz, tx) — 마우스를 따라 겨냥도 미리보기
         self.plane_pending = None     # 평면도형 도구: (종류, 크기, 이름, 표시)
+        self.xform = None             # 옮기기·대칭·회전: {"need": "line"|"point", "cb": 함수}
+        self.axes_pending = None      # 좌표평면 도구: 범위·단위
         self.edge_pick = None         # 선 고르기: {"sid": 입체, "keys": [선 이름]}
         self.group_edit = None        # 더블클릭으로 들어간 그룹 (그 안에서는 하나씩 선택)
         self.vedit = None             # 꼭짓점 옮기기 중인 입체
@@ -403,6 +406,11 @@ class Canvas(QWidget):
             if o["type"] == "solid" and ok(o):
                 if st.createStroke(geo.solid(o)["vis"]).contains(wp):
                     return o["id"], "body"
+        for o in objs:
+            if o["type"] == "graph" and ok(o):
+                gi = geo.graph_paths(o)
+                if gi and gi["rect"].contains(wp) and st.createStroke(gi["path"]).contains(wp):
+                    return o["id"], "body"
         # 입체 위에 그린 다각형이 입체보다 먼저 잡히도록 (작은 것부터)
         polys = []
         for o in objs:
@@ -419,6 +427,10 @@ class Canvas(QWidget):
             if o["type"] == "solid" and ok(o):
                 info = geo.solid(o)
                 if info["hull"] is not None and info["hull"].containsPoint(wp, Qt.OddEvenFill):
+                    return o["id"], "body"
+        for o in objs:
+            if o["type"] == "axes" and ok(o):
+                if geo.axes(o)["rect"].adjusted(-12, -12, 12, 12).contains(wp):
                     return o["id"], "body"
         return None
 
@@ -488,6 +500,18 @@ class Canvas(QWidget):
 
     def draw_preview(self, p, geo):
         if self.tool == "select":
+            return
+        if self.tool == "axes" and self.underMouse():
+            ap = dict(M.AXES_DEFAULT)
+            ap.update(self.axes_pending or {})
+            c = self.snap(self.mouse, self.alt_now())
+            u = float(ap["unit"]) * M.GRID
+            r = QRectF(c.x() + ap["xmin"] * u, c.y() - ap["ymax"] * u, (ap["xmax"] - ap["xmin"]) * u, (ap["ymax"] - ap["ymin"]) * u)
+            p.setPen(QPen(QColor(40, 140, 255), 1.5 / self.scale, Qt.DashLine))
+            p.setBrush(QColor(40, 140, 255, 18))
+            p.drawRect(r)
+            p.drawLine(QPointF(r.left(), c.y()), QPointF(r.right(), c.y()))
+            p.drawLine(QPointF(c.x(), r.top()), QPointF(c.x(), r.bottom()))
             return
         if self.tool == "plane" and self.plane_pending and self.underMouse():
             import planes as PL
@@ -620,6 +644,23 @@ class Canvas(QWidget):
         self.update()
 
     def press_select(self, wp, mods):
+        if self.xform:
+            xf = self.xform
+            if xf["need"] == "line":
+                h = self.hit(wp, kinds=("segment",))
+                if h and self.doc.objects[h[0]]["type"] == "segment":
+                    self.xform = None
+                    xf["cb"](h[0])
+                else:
+                    self.status.emit("대칭축이 될 선분·직선을 클릭하세요. (Esc: 취소)")
+            else:
+                pid = self.pick_point(wp)
+                if pid:
+                    self.xform = None
+                    xf["cb"](pid)
+                else:
+                    self.status.emit("중심이 될 점을 클릭하세요. (Esc: 취소)")
+            return
         if self.cut_pick:
             self.press_cut_pick(wp)
             return
@@ -721,13 +762,13 @@ class Canvas(QWidget):
                 t = ob["type"]
                 if t == "solid":
                     pos.add(ob.get("host") if ob.get("host") in doc.objects else i)
-                elif t in ("text", "measure", "net"):
+                elif t in ("text", "measure", "net", "axes"):
                     pos.add(i)
                 elif t == "tick":
                     seg = doc.objects.get(ob["seg"])
                     if seg:
                         pts |= {seg["a"], seg["b"]}
-                elif t in ("brace", "angle"):
+                elif t in ("brace", "angle", "graph"):
                     continue
                 else:
                     pts |= doc.point_ids_of([i])
@@ -973,6 +1014,13 @@ class Canvas(QWidget):
             elif t == "net":
                 ni = geo.net(o)
                 if ni and r.contains(ni["hull"].boundingRect()):
+                    out.append(o["id"])
+            elif t == "axes":
+                if r.contains(geo.axes(o)["rect"]):
+                    out.append(o["id"])
+            elif t == "graph":
+                ax = doc.objects.get(o.get("axes"))
+                if ax and r.contains(geo.axes(ax)["rect"]):
                     out.append(o["id"])
             else:
                 pts = doc.point_ids_of([o["id"]]) if t != "tick" else doc.point_ids_of([o["seg"]])
@@ -1389,6 +1437,14 @@ class Canvas(QWidget):
         elif t == "plane":
             if self.win.add_plane(self.snap(wp, alt)):
                 self.done_shape()
+        elif t == "axes":
+            q = self.snap(wp, alt)
+            self.win.checkpoint()
+            aid = M.make_axes(doc, q.x(), q.y(), self.axes_pending or {})
+            self.set_selection([aid])
+            self.notify()
+            self.status.emit("좌표평면을 놓았습니다. 속성 창에서 그래프와 순서쌍 점을 넣으세요.")
+            self.done_shape()
         elif t == "tick":
             h = self.hit(wp, kinds=("segment",))
             if not h:
@@ -2073,6 +2129,10 @@ class Canvas(QWidget):
             self.setCursor(Qt.OpenHandCursor)
             return
         if k == Qt.Key_Escape:
+            if self.xform:
+                self.xform = None
+                self.status.emit("취소했습니다.")
+                return
             if self.vedit is not None:
                 self.vedit = None
                 self.status.emit("꼭짓점 옮기기를 끝냈습니다.")
